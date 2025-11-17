@@ -45,12 +45,33 @@
                         </option>
                     {% endfor %}
                 </select>
-                {% for model in model_options.transcribe %}
-                    {% if not model.downloaded %}
-                        <button class="download-btn" type="button" onclick="downloadModel('{{model.name}}', 'transcribe')">Скачать {{model.display_name}}</button>
-                    {% endif %}
-                {% endfor %}
+                <div id="transcribe_downloads">
+                    {% for model in model_options.transcribe %}
+                        {% if not model.downloaded %}
+                            <button class="download-btn" type="button" onclick="downloadModel('{{model.name}}', 'transcribe')">Скачать {{model.display_name}}</button>
+                        {% endif %}
+                    {% endfor %}
+                </div>
             </div>
+
+            <div class="models-section">
+                <label for="summary_backend_selector">Источник моделей пересказа:</label>
+                <select id="summary_backend_selector">
+                    <option value="ollama">Ollama (локальный сервер)</option>
+                    <option value="llama_cpp">llama.cpp</option>
+                    <option value="custom_api">Пользовательское API</option>
+                </select>
+                <div class="small">Настройка сохраняется в вашем браузере и влияет на список моделей пересказа.</div>
+            </div>
+
+            <div class="models-section" id="custom_api_block" style="display:none;">
+                <label for="custom_api_url">URL пользовательского API:</label>
+                <input type="text" id="custom_api_url" placeholder="https://example.com/summary-endpoint">
+                <label for="custom_api_models">Список моделей (через запятую):</label>
+                <input type="text" id="custom_api_models" placeholder="my-model,my-other-model">
+                <div class="small">Модели будут отображаться только в интерфейсе и передаваться в API вместе с текстом.</div>
+            </div>
+
             <div class="models-section">
                 <label for="summarize_model">Модель пересказа (summary):</label>
                 <select name="summarize_model" id="summarize_model" required>
@@ -65,12 +86,17 @@
                         </option>
                     {% endfor %}
                 </select>
-                {% for model in model_options.summarize %}
-                    {% if not model.downloaded %}
-                        <button class="download-btn" type="button" onclick="downloadModel('{{model.name}}', 'summarize')">Скачать {{model.display_name}}</button>
-                    {% endif %}
-                {% endfor %}
+                <div id="summarize_downloads">
+                    {% for model in model_options.summarize %}
+                        {% if not model.downloaded %}
+                            <button class="download-btn" type="button" onclick="downloadModel('{{model.name}}', 'summarize')">Скачать {{model.display_name}}</button>
+                        {% endif %}
+                    {% endfor %}
+                </div>
             </div>
+            <input type="hidden" name="summary_backend" id="summary_backend_field" value="{{config.SUMMARY_BACKEND}}">
+            <input type="hidden" name="custom_api_url" id="custom_api_url_field">
+            <input type="hidden" name="custom_api_models" id="custom_api_models_field">
             <div id="progress-bar"><div id="progress-value"></div></div>
             <button type="submit" id="processBtn">Обработать</button>
         </form>
@@ -78,11 +104,27 @@
         <div class="small" style="margin-top:28px;">
             <b>Каталог моделей:</b> {{config.MODEL_DIR}}<br>
             <b>Каталог результатов/config:</b> {{config.CONFIG_DIR}}<br>
+            <b>Ollama API:</b> {{config.OLLAMA_API_BASE}}<br>
             Все модели можно скачать в интерфейсе или через ollama/pip/huggingface вручную в указанный каталог.
         </div>
     </div>
 
     <script>
+    const STORAGE_KEYS = {
+        backend: "insight_summary_backend",
+        transcribeModel: "insight_transcribe_model",
+        summarizeModel: "insight_summarize_model",
+        customApiUrl: "insight_custom_api_url",
+        customApiModels: "insight_custom_api_models"
+    };
+
+    const summaryBackendSelect = document.getElementById("summary_backend_selector");
+    const customApiBlock = document.getElementById("custom_api_block");
+    const customApiUrlInput = document.getElementById("custom_api_url");
+    const customApiModelsInput = document.getElementById("custom_api_models");
+    const transcribeSelect = document.getElementById("transcribe_model");
+    const summarizeSelect = document.getElementById("summarize_model");
+
     function showNotify(msg, error=false) {
         var notif = document.getElementById('notify');
         notif.textContent = msg;
@@ -120,8 +162,100 @@
         xhr.send("model_name="+encodeURIComponent(name)+"&model_type="+encodeURIComponent(type));
     }
 
+    function populateSelect(selectEl, items, storageKey){
+        const saved = localStorage.getItem(storageKey);
+        const currentValue = selectEl.value;
+        selectEl.innerHTML = "";
+        items.forEach(item => {
+            const opt = document.createElement("option");
+            opt.value = item.name;
+            opt.textContent = `${item.display_name} ${item.downloaded ? "(скачано)" : "(требуется скачать)"}`;
+            selectEl.appendChild(opt);
+        });
+        const preferred = saved && items.find(i => i.name === saved) ? saved : (items[0]?.name || "");
+        if (preferred) {
+            selectEl.value = preferred;
+            localStorage.setItem(storageKey, preferred);
+        }
+    }
+
+    function renderDownloadButtons(containerId, items, type){
+        const container = document.getElementById(containerId);
+        if(!container) return;
+        container.innerHTML = "";
+        items.filter(item => !item.downloaded).forEach(item => {
+            const btn = document.createElement("button");
+            btn.type = "button";
+            btn.className = "download-btn";
+            btn.textContent = `Скачать ${item.display_name}`;
+            btn.onclick = () => downloadModel(item.name, type);
+            container.appendChild(btn);
+        });
+    }
+
+    function applyBackendState(){
+        const backend = summaryBackendSelect.value;
+        summaryBackendSelect.value = backend;
+        customApiBlock.style.display = backend === "custom_api" ? "block" : "none";
+        localStorage.setItem(STORAGE_KEYS.backend, backend);
+        loadModelOptions();
+    }
+
+    function loadModelOptions(){
+        const backend = summaryBackendSelect.value;
+        const params = new URLSearchParams();
+        params.append("summary_backend", backend);
+        if(backend === "custom_api"){
+            params.append("custom_models", customApiModelsInput.value || "");
+        }
+        fetch(`/list_models?${params.toString()}`)
+            .then(resp => resp.json())
+            .then(data => {
+                populateSelect(transcribeSelect, data.transcribe || [], STORAGE_KEYS.transcribeModel);
+                populateSelect(summarizeSelect, data.summarize || [], STORAGE_KEYS.summarizeModel);
+                renderDownloadButtons("transcribe_downloads", data.transcribe || [], "transcribe");
+                renderDownloadButtons("summarize_downloads", data.summarize || [], "summarize");
+            })
+            .catch(() => showNotify("Не удалось обновить список моделей", true));
+    }
+
+    function restoreSettings(){
+        const savedBackend = localStorage.getItem(STORAGE_KEYS.backend) || "{{config.SUMMARY_BACKEND}}";
+        summaryBackendSelect.value = savedBackend;
+        customApiUrlInput.value = localStorage.getItem(STORAGE_KEYS.customApiUrl) || "";
+        customApiModelsInput.value = localStorage.getItem(STORAGE_KEYS.customApiModels) || "";
+        customApiBlock.style.display = savedBackend === "custom_api" ? "block" : "none";
+        populateSelect(transcribeSelect, {{ model_options.transcribe | tojson }}, STORAGE_KEYS.transcribeModel);
+        populateSelect(summarizeSelect, {{ model_options.summarize | tojson }}, STORAGE_KEYS.summarizeModel);
+        renderDownloadButtons("transcribe_downloads", {{ model_options.transcribe | tojson }}, "transcribe");
+        renderDownloadButtons("summarize_downloads", {{ model_options.summarize | tojson }}, "summarize");
+        setTimeout(loadModelOptions, 100);
+    }
+
+    summaryBackendSelect.addEventListener("change", applyBackendState);
+    customApiUrlInput.addEventListener("input", () => {
+        localStorage.setItem(STORAGE_KEYS.customApiUrl, customApiUrlInput.value);
+    });
+    customApiModelsInput.addEventListener("input", () => {
+        localStorage.setItem(STORAGE_KEYS.customApiModels, customApiModelsInput.value);
+        if(summaryBackendSelect.value === "custom_api"){
+            loadModelOptions();
+        }
+    });
+    transcribeSelect.addEventListener("change", () => {
+        localStorage.setItem(STORAGE_KEYS.transcribeModel, transcribeSelect.value);
+    });
+    summarizeSelect.addEventListener("change", () => {
+        localStorage.setItem(STORAGE_KEYS.summarizeModel, summarizeSelect.value);
+    });
+
+    restoreSettings();
+
     // Прогресс для самой обработки
     document.getElementById('processForm').onsubmit = function(){
+        document.getElementById('summary_backend_field').value = summaryBackendSelect.value;
+        document.getElementById('custom_api_url_field').value = customApiUrlInput.value;
+        document.getElementById('custom_api_models_field').value = customApiModelsInput.value;
         document.getElementById('processBtn').disabled=true;
         showNotify("Обработка файла...");
         document.getElementById('progress-bar').style.display='block';

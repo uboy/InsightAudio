@@ -1,0 +1,53 @@
+{
+  "default_config": {
+    "MODEL_DIR": "../models",
+    "CONFIG_DIR": "../config",
+    "RESULTS_DIR": "../tmp",
+    "LOG_DIR": "../logs",
+    "DEFAULT_TRANSCRIBE_MODEL": "whisper-tiny",
+    "DEFAULT_SUMMARIZE_MODEL": "llama3:8b",
+    "SUMMARY_BACKEND": "ollama",
+    "OLLAMA_API_BASE": "http://tsnnlx12bs02.ad.telmast.com:11434",
+    "LLAMA_CPP_MODEL_DIR": "../models/llama_cpp",
+    "LLAMA_CPP_MODELS": [],
+    "LLAMA_CPP_API_URL": "http://localhost:8080/completion",
+    "CUSTOM_SUMMARY_API_URL": "",
+    "CUSTOM_SUMMARY_API_HEADERS": {},
+    "CUSTOM_SUMMARY_MODELS": [],
+    "SUMMARY_PROMPT": "Подготовь структурированный пересказ по критериям:\\n1. Тема/Название встречи/лекции\\n2. Участники, роли\\n3. Хронология вопросов и решений\\n4. Ключевые задачи, обсуждения, решения\\n5. Даты, документы, ссылки\\n6. Итоги и открытые вопросы\\nОформи результат структурированно, разделы, список, в формате Markdown.",
+    "AUDIO_LANGUAGE": "ru"
+  },
+  "models": {
+    "transcribe": [
+      {"name": "whisper-tiny", "display_name": "Whisper Tiny", "size": "1.0GB", "downloaded": false},
+      {"name": "whisper-tiny.en", "display_name": "Whisper Tiny EN", "size": "1.0GB", "downloaded": false},
+      {"name": "whisper-base", "display_name": "Whisper Base", "size": "1.4GB", "downloaded": false},
+      {"name": "whisper-base.en", "display_name": "Whisper Base EN", "size": "1.4GB", "downloaded": false},
+      {"name": "whisper-small", "display_name": "Whisper Small", "size": "2.9GB", "downloaded": false},
+      {"name": "whisper-small.en", "display_name": "Whisper Small EN", "size": "2.9GB", "downloaded": false},
+      {"name": "whisper-medium", "display_name": "Whisper Medium", "size": "5.5GB", "downloaded": false},
+      {"name": "whisper-medium.en", "display_name": "Whisper Medium EN", "size": "5.5GB", "downloaded": false},
+      {"name": "whisper-large", "display_name": "Whisper Large", "size": "9.6GB", "downloaded": false},
+      {"name": "whisper-large-v2", "display_name": "Whisper Large v2", "size": "9.8GB", "downloaded": false},
+      {"name": "whisper-large-v3", "display_name": "Whisper Large v3", "size": "9.8GB", "downloaded": false},
+      {"name": "whisper-tiny-int8", "display_name": "Whisper Tiny INT8 (optimised)", "size": "1.0GB", "downloaded": false},
+      {"name": "whisper-base-int8", "display_name": "Whisper Base INT8 (optimised)", "size": "1.4GB", "downloaded": false},
+      {"name": "whisper-small-int8", "display_name": "Whisper Small INT8 (optimised)", "size": "2.9GB", "downloaded": false},
+      {"name": "whisper-medium-int8", "display_name": "Whisper Medium INT8 (optimised)", "size": "5.5GB", "downloaded": false},
+      {"name": "whisper-large-v2-int8", "display_name": "Whisper Large v2 INT8 (optimised)", "size": "9.8GB", "downloaded": false},
+      {"name": "whisper-large-v3-int8", "display_name": "Whisper Large v3 INT8 (optimised)", "size": "9.8GB", "downloaded": false},
+      {"name": "faster-whisper-small", "display_name": "Faster-Whisper Small", "size": "2.9GB", "downloaded": false},
+      {"name": "faster-whisper-medium", "display_name": "Faster-Whisper Medium", "size": "5.5GB", "downloaded": false},
+      {"name": "faster-whisper-large-v2", "display_name": "Faster-Whisper Large v2", "size": "9.8GB", "downloaded": false},
+      {"name": "faster-whisper-large-v3", "display_name": "Faster-Whisper Large v3", "size": "9.8GB", "downloaded": false},
+      {"name": "vosk-ru", "display_name": "Vosk Russian", "size": "500MB", "downloaded": false}
+    ],
+    "summarize": [
+      {"name": "llama3:8b", "display_name": "Llama3 8B (Ollama)", "size": "4.0GB", "downloaded": false},
+      {"name": "gemma2:9b", "display_name": "Gemma2 9B (Ollama)", "size": "5.5GB", "downloaded": false},
+      {"name": "llama3.1:8b", "display_name": "Llama3.1 8B (Ollama)", "size": "4.0GB", "downloaded": false},
+      {"name": "mistral:7b", "display_name": "Mistral 7B (Ollama)", "size": "4.1GB", "downloaded": false}
+    ]
+  }
+}
+

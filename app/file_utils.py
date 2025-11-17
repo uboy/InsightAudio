@@ -12,6 +12,7 @@ def handle_upload(upload_file, save_dir=RESULTS_DIR):
     """
     filename = clean_filename(upload_file.filename)
     save_path = os.path.join(save_dir, filename)
+    upload_file.file.seek(0)
     with open(save_path, "wb") as f:
         f.write(upload_file.file.read())
     return save_path

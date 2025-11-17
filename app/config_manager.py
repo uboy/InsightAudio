@@ -1,25 +1,44 @@
-import os
 import json
+import os
+from typing import Any, Dict
 
-CONFIG_DIR = "../config"
+from app import settings_loader
+
+BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+CONFIG_DIR = os.path.abspath(os.path.join(BASE_DIR, "..", "config"))
 CONFIG_FILE = os.path.join(CONFIG_DIR, "config.json")
-DEFAULT_CONFIG = {
-    "MODEL_DIR": "../models",
-    "RESULTS_DIR": "/tmp",
-    "DEFAULT_TRANSCRIBE_MODEL": "whisper-tiny",
-    "DEFAULT_SUMMARIZE_MODEL": "llama3-8b",
-    "SUMMARY_PROMPT": (
-        "Подготовь структурированный пересказ по критериям:\n"
-        "1. Тема/Название встречи/лекции\n"
-        "2. Участники, роли\n"
-        "3. Хронология вопросов и решений\n"
-        "4. Ключевые задачи, обсуждения, решения\n"
-        "5. Даты, документы, ссылки\n"
-        "6. Итоги и открытые вопросы\n"
-        "Оформи результат структурированно, разделы, список, в формате Markdown."
-    ),
-    "AUDIO_LANGUAGE": "ru"
-}
+PATH_KEYS = (
+    "MODEL_DIR",
+    "RESULTS_DIR",
+    "LOG_DIR",
+    "LLAMA_CPP_MODEL_DIR",
+)
+
+
+def _normalize_path(value: str) -> str:
+    if not value:
+        return value
+    if os.path.isabs(value):
+        return value
+    return os.path.abspath(os.path.join(BASE_DIR, value))
+
+
+def _normalize_config(cfg: Dict[str, Any]) -> Dict[str, Any]:
+    cfg.setdefault("CONFIG_DIR", CONFIG_DIR)
+    for key in PATH_KEYS:
+        if key in cfg and isinstance(cfg[key], str):
+            cfg[key] = _normalize_path(cfg[key])
+    cfg.setdefault("LLAMA_CPP_MODELS", [])
+    cfg.setdefault("CUSTOM_SUMMARY_API_HEADERS", {})
+    return cfg
+
+
+def _build_default_config() -> Dict[str, Any]:
+    defaults = settings_loader.load_default_settings().get("default_config", {}).copy()
+    return _normalize_config(defaults)
+
+
+DEFAULT_CONFIG: Dict[str, Any] = _build_default_config()
 
 def ensure_config():
     """Проверяет наличие config.json, если нет — пишет дефолт."""
@@ -34,7 +53,7 @@ def get_config():
     ensure_config()
     with open(CONFIG_FILE, "r", encoding="utf-8") as f:
         cfg = json.load(f)
-    return cfg
+    return _normalize_config(cfg)
 
 def set_config(new_cfg: dict):
     """Обновляет конфиг."""
@@ -42,6 +61,7 @@ def set_config(new_cfg: dict):
     cfg = get_config()
     for k in new_cfg:
         cfg[k] = new_cfg[k]
+    cfg = _normalize_config(cfg)
     with open(CONFIG_FILE, "w", encoding="utf-8") as f:
         json.dump(cfg, f, ensure_ascii=False, indent=2)
     return cfg
@@ -55,6 +75,7 @@ def set_param(key, value):
     """Устанавливает отдельный параметр конфига."""
     cfg = get_config()
     cfg[key] = value
+    cfg = _normalize_config(cfg)
     with open(CONFIG_FILE, "w", encoding="utf-8") as f:
         json.dump(cfg, f, ensure_ascii=False, indent=2)
     return True

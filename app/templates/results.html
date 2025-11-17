@@ -12,6 +12,9 @@
         a { color: #0059b2; font-weight: bold; text-decoration: none;}
         .btn { background: #0059b2; color: #fff; border: none; padding: 8px 22px; border-radius: 8px; font-weight: bold; cursor: pointer; margin:16px 0;}
         .file-block { background:#fafbfc; border:1px solid #ddd; padding:10px; margin-bottom:10px; border-radius:5px;}
+        .log-block { margin-top:30px; background:#141414; color:#f4f4f4; padding:16px; border-radius:8px; font-family: 'Courier New', monospace;}
+        .log-block pre { white-space: pre-wrap; margin:0; max-height:260px; overflow-y:auto;}
+        .notify { padding:12px; border-radius:6px; background:#ffd9d9; color:#a40000; margin-top:20px; }
     </style>
 </head>
 <body>
@@ -32,6 +35,23 @@
             </ul>
         {% else %}
             <p>Нет обработанных файлов для скачивания.</p>
+        {% endif %}
+
+        {% if log_lines %}
+        <div class="log-block">
+            <h3>Лог обработки</h3>
+            <pre>
+{% for line in log_lines %}{{ line }}
+{% endfor %}
+            </pre>
+            {% if request_id %}
+            <a href="/logs/request/{{ request_id }}" class="btn" download>Скачать лог</a>
+            {% endif %}
+        </div>
+        {% endif %}
+
+        {% if error_message %}
+            <div class="notify">{{ error_message }}</div>
         {% endif %}
 
         <a href="/" class="btn">Вернуться на главную</a>
