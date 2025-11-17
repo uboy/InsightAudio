@@ -1,0 +1,22 @@
+<component name="InspectionProjectProfileManager">
+  <profile version="1.0">
+    <option name="myName" value="Project Default" />
+    <inspection_tool class="DuplicatePropertyInspection" enabled="true" level="WARNING" enabled_by_default="true" />
+    <inspection_tool class="PyPackageRequirementsInspection" enabled="true" level="WARNING" enabled_by_default="true">
+      <option name="ignoredPackages">
+        <list>
+          <option value="shutil" />
+          <option value="logging" />
+          <option value="pathlib" />
+          <option value="json" />
+          <option value="datetime" />
+          <option value="re" />
+          <option value="base64" />
+          <option value="subprocess" />
+          <option value="tempfile" />
+          <option value="stat" />
+        </list>
+      </option>
+    </inspection_tool>
+  </profile>
+</component>

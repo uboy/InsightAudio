@@ -1,0 +1,40 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+    <meta charset="UTF-8">
+    <title>InsightAudio — Результаты обработки</title>
+    <style>
+        body { font-family: Arial, sans-serif; margin: 40px; background: #f4f6f8; color: #333; }
+        .container { max-width: 700px; margin: auto; background: #fff; padding: 32px 40px; border-radius: 12px; box-shadow: 0 2px 10px #aaa2; }
+        h1 { color: #0059b2; }
+        ul { margin-top: 24px; }
+        li { margin-bottom: 14px; padding-left: 6px; }
+        a { color: #0059b2; font-weight: bold; text-decoration: none;}
+        .btn { background: #0059b2; color: #fff; border: none; padding: 8px 22px; border-radius: 8px; font-weight: bold; cursor: pointer; margin:16px 0;}
+        .file-block { background:#fafbfc; border:1px solid #ddd; padding:10px; margin-bottom:10px; border-radius:5px;}
+    </style>
+</head>
+<body>
+    <div class="container">
+        <h1>InsightAudio</h1>
+        <h2>Результаты обработки</h2>
+        {% if files|length > 0 %}
+            <ul>
+            {% for f in files %}
+                <li class="file-block">
+                    <div>
+                        <b>Файл:</b> {{ f }}
+                        <br>
+                        <a href="/download/{{ f }}" class="btn" download>Скачать</a>
+                    </div>
+                </li>
+            {% endfor %}
+            </ul>
+        {% else %}
+            <p>Нет обработанных файлов для скачивания.</p>
+        {% endif %}
+
+        <a href="/" class="btn">Вернуться на главную</a>
+    </div>
+</body>
+</html>

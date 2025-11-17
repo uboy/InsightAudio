@@ -1,0 +1,6 @@
+fastapi==0.110.1
+uvicorn==0.29.0
+python-multipart==0.0.7
+jinja2==3.1.3
+whisper
+ollama-client

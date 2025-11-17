@@ -1,0 +1,16 @@
+version: "3.8"
+
+services:
+  insightaudio:
+    build: .
+    container_name: insightaudio
+    ports:
+      - "55667:55667"
+    volumes:
+      - ./models:/models
+      - ./config:/config
+      - ./tmp:/tmp
+    environment:
+      - MODEL_DIR=/models
+      - CONFIG_DIR=/config
+    restart: unless-stopped

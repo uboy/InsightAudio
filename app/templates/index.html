@@ -1,0 +1,131 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+    <meta charset="UTF-8">
+    <title>InsightAudio — загрузка и транскрибация</title>
+    <style>
+        body { font-family: Arial, sans-serif; margin: 40px; background: #f4f6f8; color: #333; }
+        .container { max-width: 700px; margin: auto; background: #fff; padding: 32px 40px; border-radius: 12px; box-shadow: 0 2px 10px #aaa2; }
+        h1 { color: #0059b2; }
+        label { font-weight: 700; margin: 12px 0 6px 0; display: block;}
+        select, input[type="file"] { margin-bottom: 20px; }
+        button { background: #0059b2; color: #fff; border: none; padding: 12px 28px; border-radius: 8px; font-weight: bold; cursor: pointer; }
+        button:disabled { background: #aaa; }
+        .models-section { margin-bottom: 16px; border: 1px solid #ddd; padding: 12px; border-radius: 8px; background: #fafbfc; }
+        .status { font-size: 13px; color: #009100; margin-left: 8px; }
+        .status.notdownloaded { color: #a00; }
+        .small { font-size: 12px; color: #555; }
+        #progress-bar { width: 100%; background: #eee; height: 8px; border-radius: 4px; margin: 12px 0; display:none;}
+        #progress-value { background: #0059b2; height: 8px; border-radius: 4px; width:0%;}
+        .notify { padding: 10px; border-radius:5px; color: #fff; background: #38a; margin:10px 0; display:none;}
+        .notify.error { background: #c00; }
+        .download-btn { background: #e09000; color: #fff; padding: 6px 16px; border-radius: 6px; font-size: 13px; margin:0 10px;}
+    </style>
+</head>
+<body>
+    <div class="container">
+        <h1>InsightAudio</h1>
+        <h2>Загрузить аудио или видео</h2>
+        <div class="notify" id="notify"></div>
+        <form method="post" enctype="multipart/form-data" action="/process" id="processForm">
+            <label for="file">Файл (аудио/видео):</label>
+            <input type="file" name="file" id="file" required accept="audio/*,video/*">
+
+            <div class="models-section">
+                <label for="transcribe_model">Модель транскрипции:</label>
+                <select name="transcribe_model" id="transcribe_model" required>
+                    {% for model in model_options.transcribe %}
+                        <option value="{{model.name}}">
+                            {{model.display_name}}
+                            {% if model.downloaded %}
+                                (скачано)
+                            {% else %}
+                                (требуется скачать)
+                            {% endif %}
+                        </option>
+                    {% endfor %}
+                </select>
+                {% for model in model_options.transcribe %}
+                    {% if not model.downloaded %}
+                        <button class="download-btn" type="button" onclick="downloadModel('{{model.name}}', 'transcribe')">Скачать {{model.display_name}}</button>
+                    {% endif %}
+                {% endfor %}
+            </div>
+            <div class="models-section">
+                <label for="summarize_model">Модель пересказа (summary):</label>
+                <select name="summarize_model" id="summarize_model" required>
+                    {% for model in model_options.summarize %}
+                        <option value="{{model.name}}">
+                            {{model.display_name}}
+                            {% if model.downloaded %}
+                                (скачано)
+                            {% else %}
+                                (требуется скачать)
+                            {% endif %}
+                        </option>
+                    {% endfor %}
+                </select>
+                {% for model in model_options.summarize %}
+                    {% if not model.downloaded %}
+                        <button class="download-btn" type="button" onclick="downloadModel('{{model.name}}', 'summarize')">Скачать {{model.display_name}}</button>
+                    {% endif %}
+                {% endfor %}
+            </div>
+            <div id="progress-bar"><div id="progress-value"></div></div>
+            <button type="submit" id="processBtn">Обработать</button>
+        </form>
+
+        <div class="small" style="margin-top:28px;">
+            <b>Каталог моделей:</b> {{config.MODEL_DIR}}<br>
+            <b>Каталог результатов/config:</b> {{config.CONFIG_DIR}}<br>
+            Все модели можно скачать в интерфейсе или через ollama/pip/huggingface вручную в указанный каталог.
+        </div>
+    </div>
+
+    <script>
+    function showNotify(msg, error=false) {
+        var notif = document.getElementById('notify');
+        notif.textContent = msg;
+        notif.className = 'notify'+(error?' error':'');
+        notif.style.display='block';
+        setTimeout(() => notif.style.display='none', 4000);
+    }
+
+    function downloadModel(name, type) {
+        showNotify('Скачивание модели '+name+'...');
+        document.getElementById('progress-bar').style.display='block';
+        var xhr = new XMLHttpRequest();
+        xhr.open("POST", "/download_model", true);
+        xhr.setRequestHeader("Content-Type", "application/x-www-form-urlencoded");
+        xhr.onprogress=function(e){
+            var percent = e.lengthComputable?Math.floor(100*e.loaded/e.total):50;
+            document.getElementById('progress-value').style.width=percent+"%";
+        };
+        xhr.onload = function(){
+            document.getElementById('progress-bar').style.display='none';
+            document.getElementById('progress-value').style.width="0%";
+            try {
+                var data = JSON.parse(xhr.responseText);
+                if(data.status=="OK") showNotify("Модель успешно скачана!");
+                else showNotify("Ошибка: "+(data.message||"не удалось скачать"), true);
+            } catch(e){
+                showNotify("Сбой скачивания модели", true);
+            }
+            location.reload();
+        };
+        xhr.onerror = function(){
+            document.getElementById('progress-bar').style.display='none';
+            showNotify("Ошибка запроса к серверу!", true);
+        };
+        xhr.send("model_name="+encodeURIComponent(name)+"&model_type="+encodeURIComponent(type));
+    }
+
+    // Прогресс для самой обработки
+    document.getElementById('processForm').onsubmit = function(){
+        document.getElementById('processBtn').disabled=true;
+        showNotify("Обработка файла...");
+        document.getElementById('progress-bar').style.display='block';
+    }
+    </script>
+</body>
+</html>
