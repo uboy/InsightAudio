@@ -484,15 +484,19 @@
         return Math.max(ttft + (tokens / metrics.throughput), 1);
     }
 
-    function updateDownloadButton(selectId, buttonId) {
+    function updateDownloadButton(selectId, buttonId, type) {
         const select = document.getElementById(selectId);
         const btn = document.getElementById(buttonId);
         if (!select || !btn) return;
         const selectedOption = select.options[select.selectedIndex];
+        if (!selectedOption) return;
         const isDownloaded = selectedOption.getAttribute('data-downloaded') === 'true';
         btn.style.display = isDownloaded ? 'none' : 'block';
         if(!isDownloaded){
-            btn.textContent = 'Скачать ' + selectedOption.textContent.split(' (')[0];
+            const modelName = selectedOption.textContent.split(' (')[0];
+            btn.textContent = 'Скачать ' + modelName;
+        } else {
+            btn.textContent = 'Скачать';
         }
     }
 
@@ -546,13 +550,17 @@
                 var data = JSON.parse(xhr.responseText);
                 if(data.status=="OK") {
                     showNotify("Модель успешно скачана!");
-                    // Сохраняем выбранную модель перед перезагрузкой
+                    // Обновляем список моделей без перезагрузки страницы
+                    // Сохраняем выбранную модель
                     if(type === 'transcribe'){
                         localStorage.setItem(STORAGE_KEYS.transcribeModel, name);
                     } else if(type === 'summarize'){
                         localStorage.setItem(STORAGE_KEYS.summarizeModel, name);
+                    } else if(type === 'translate'){
+                        localStorage.setItem(STORAGE_KEYS.translateModel, name);
                     }
-                    setTimeout(() => location.reload(), 1500);
+                    // Обновляем список моделей и восстанавливаем выбранную
+                    loadModelOptions();
                 } else {
                     showNotify("Ошибка: "+(data.message||"не удалось скачать"), true, data.traceback || null, true);
                 }
@@ -583,8 +591,9 @@
     }
 
     function populateSelect(selectEl, items, storageKey, scope){
+        if (!selectEl) return;
         const saved = localStorage.getItem(storageKey);
-        const currentValue = selectEl.value;
+        const currentValue = selectEl.value || saved; // Используем текущее значение или сохраненное
         selectEl.innerHTML = "";
         items.forEach(item => {
             const opt = document.createElement("option");
@@ -603,7 +612,12 @@
             opt.textContent = label;
             selectEl.appendChild(opt);
         });
-        const preferred = saved && items.find(i => i.name === saved) ? saved : (items[0]?.name || "");
+        // Восстанавливаем выбранную модель: сначала пробуем текущее значение, потом сохраненное, потом первую
+        const preferred = (currentValue && items.find(i => i.name === currentValue)) 
+            ? currentValue 
+            : (saved && items.find(i => i.name === saved)) 
+                ? saved 
+                : (items[0]?.name || "");
         if (preferred) {
             selectEl.value = preferred;
             localStorage.setItem(storageKey, preferred);
@@ -720,12 +734,18 @@
         fetch(`/list_models?${params.toString()}`)
             .then(resp => resp.json())
             .then(data => {
+                // Сохраняем текущие выбранные модели перед обновлением
+                const currentTranscribe = transcribeSelect ? transcribeSelect.value : null;
+                const currentSummarize = summarizeSelect ? summarizeSelect.value : null;
+                const currentTranslate = translateModelSelect ? translateModelSelect.value : null;
+                const currentReview = document.getElementById('review_model') ? document.getElementById('review_model').value : null;
+                
                 populateSelect(transcribeSelect, data.transcribe || [], STORAGE_KEYS.transcribeModel);
                 populateSelect(summarizeSelect, data.summarize || [], STORAGE_KEYS.summarizeModel, 'summarize');
+                
                 // Обновляем также модель ревью теми же моделями
                 const reviewSelect = document.getElementById('review_model');
                 if(reviewSelect){
-                    const currentValue = reviewSelect.value;
                     reviewSelect.innerHTML = '<option value="">— не использовать —</option>';
                     (data.summarize || []).forEach(item => {
                         const opt = document.createElement('option');
@@ -738,11 +758,31 @@
                         opt.textContent = label;
                         reviewSelect.appendChild(opt);
                     });
-                    if(currentValue) reviewSelect.value = currentValue;
+                    // Восстанавливаем выбранную модель ревью
+                    if(currentReview && Array.from(reviewSelect.options).some(opt => opt.value === currentReview)){
+                        reviewSelect.value = currentReview;
+                    }
                 }
+                
                 if(translateModelSelect && data.translate){
                     populateSelect(translateModelSelect, data.translate || [], STORAGE_KEYS.translateModel, 'translate');
                 }
+                
+                // Восстанавливаем выбранные модели если они были изменены
+                if(currentTranscribe && transcribeSelect && Array.from(transcribeSelect.options).some(opt => opt.value === currentTranscribe)){
+                    transcribeSelect.value = currentTranscribe;
+                    localStorage.setItem(STORAGE_KEYS.transcribeModel, currentTranscribe);
+                }
+                if(currentSummarize && summarizeSelect && Array.from(summarizeSelect.options).some(opt => opt.value === currentSummarize)){
+                    summarizeSelect.value = currentSummarize;
+                    localStorage.setItem(STORAGE_KEYS.summarizeModel, currentSummarize);
+                }
+                if(currentTranslate && translateModelSelect && Array.from(translateModelSelect.options).some(opt => opt.value === currentTranslate)){
+                    translateModelSelect.value = currentTranslate;
+                    localStorage.setItem(STORAGE_KEYS.translateModel, currentTranslate);
+                }
+                
+                // Обновляем кнопки скачивания после восстановления выбранных моделей
                 updateDownloadButtonsForType('transcribe');
                 updateDownloadButtonsForType('summarize');
                 updateDownloadButtonsForType('translate');
@@ -1068,6 +1108,22 @@
         setTimeout(updateAsrEngineUI, 100);
     }
 
+    function formatDateTime(value){
+        if(!value) return '—';
+        try {
+            const d = new Date(value);
+            const yyyy = d.getFullYear();
+            const mm = String(d.getMonth()+1).padStart(2,'0');
+            const dd = String(d.getDate()).padStart(2,'0');
+            const hh = String(d.getHours()).padStart(2,'0');
+            const mi = String(d.getMinutes()).padStart(2,'0');
+            const ss = String(d.getSeconds()).padStart(2,'0');
+            return `${yyyy}-${mm}-${dd} ${hh}:${mi}:${ss}`;
+        } catch(e){
+            return value;
+        }
+    }
+
     function makeJobCard(job){
         const statusColor = job.status === 'success' ? '#0a0' : job.status === 'failed' ? '#c00' : '#0059b2';
         const manifest = (job.result_manifest || []).map(item => {
@@ -1076,11 +1132,15 @@
         }).join(' ');
         const err = job.error_message ? `<div style="color:#c00;font-size:13px;">${job.error_message}</div>` : '';
         const eta = job.eta_seconds != null ? `ETA: ~${Math.ceil(job.eta_seconds)} c` : '';
+        const created = formatDateTime(job.created_at);
+        const started = formatDateTime(job.started_at);
+        const finished = formatDateTime(job.finished_at);
         return `
             <div class="file-block">
                 <div><b>ID:</b> ${job.id}</div>
                 <div><b>Тип:</b> ${job.job_type}</div>
                 <div><b>Статус:</b> <span style="color:${statusColor}">${job.status}</span> · стадия: ${job.stage} · прогресс: ${job.progress}% ${eta}</div>
+                <div class="small"><b>Создана:</b> ${created} · <b>Начата:</b> ${started} · <b>Завершена:</b> ${finished}</div>
                 ${manifest ? `<div style="margin-top:8px;">${manifest}</div>` : ''}
                 ${err}
             </div>

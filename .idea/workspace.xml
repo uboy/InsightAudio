@@ -4,7 +4,10 @@
     <option name="autoReloadType" value="SELECTIVE" />
   </component>
   <component name="ChangeListManager">
-    <list default="true" id="27c1b00d-8878-4a90-9c2a-cb5b391cddc9" name="Changes" comment="feat: redesign InsightAudio pipeline (jobs, sessions, tabs, quality controls)&#10;* add background job processing (Celery + Redis) with persistent Job/User storage&#10;* implement “My Jobs” list + secure downloads for recent results&#10;* split UI into Audio / Documents / My Jobs tabs&#10;* expose key ASR quality params (language, presets, beam/temp/VAD) + fix whisper-large-v3 parsing&#10;* add prompt templates + per-run custom summary prompt and LLM quality knobs&#10;* replace fake progress with server-driven stages + ETA&#10;* unify results storage, fix speaker labels without diarization, and make caches param-aware" />
+    <list default="true" id="27c1b00d-8878-4a90-9c2a-cb5b391cddc9" name="Changes" comment="fixing model download">
+      <change beforePath="$PROJECT_DIR$/.gitignore" beforeDir="false" afterPath="$PROJECT_DIR$/.gitignore" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/.idea/workspace.xml" beforeDir="false" afterPath="$PROJECT_DIR$/.idea/workspace.xml" afterDir="false" />
+    </list>
     <option name="SHOW_DIALOG" value="false" />
     <option name="HIGHLIGHT_CONFLICTS" value="true" />
     <option name="HIGHLIGHT_NON_ACTIVE_CHANGELIST" value="false" />
@@ -20,18 +23,18 @@
   <component name="Git.Settings">
     <option name="RECENT_GIT_ROOT_PATH" value="$PROJECT_DIR$" />
   </component>
-  <component name="GitHubPullRequestSearchHistory"><![CDATA[{
-  "lastFilter": {
-    "state": "OPEN",
-    "assignee": "uboy"
+  <component name="GitHubPullRequestSearchHistory">{
+  &quot;lastFilter&quot;: {
+    &quot;state&quot;: &quot;OPEN&quot;,
+    &quot;assignee&quot;: &quot;uboy&quot;
   }
-}]]></component>
-  <component name="GithubPullRequestsUISettings"><![CDATA[{
-  "selectedUrlAndAccountId": {
-    "url": "git@github.com:uboy/InsightAudio.git",
-    "accountId": "383e72cd-7f55-4543-9c43-30c4c170d003"
+}</component>
+  <component name="GithubPullRequestsUISettings">{
+  &quot;selectedUrlAndAccountId&quot;: {
+    &quot;url&quot;: &quot;git@github.com:uboy/InsightAudio.git&quot;,
+    &quot;accountId&quot;: &quot;383e72cd-7f55-4543-9c43-30c4c170d003&quot;
   }
-}]]></component>
+}</component>
   <component name="ProjectColorInfo">{
   &quot;associatedIndex&quot;: 3
 }</component>
@@ -52,7 +55,7 @@
   <component name="SharedIndexes">
     <attachedChunks>
       <set>
-        <option value="bundled-python-sdk-7bb8055f9097-cbfc7b97e6b2-com.jetbrains.pycharm.community.sharedIndexes.bundled-PC-252.28238.29" />
+        <option value="bundled-python-sdk-0978a7220b69-9867c7d4c0a4-com.jetbrains.pycharm.pro.sharedIndexes.bundled-PY-253.28294.336" />
       </set>
     </attachedChunks>
   </component>
@@ -68,6 +71,9 @@
   </component>
   <component name="VcsManagerConfiguration">
     <MESSAGE value="feat: redesign InsightAudio pipeline (jobs, sessions, tabs, quality controls)&#10;* add background job processing (Celery + Redis) with persistent Job/User storage&#10;* implement “My Jobs” list + secure downloads for recent results&#10;* split UI into Audio / Documents / My Jobs tabs&#10;* expose key ASR quality params (language, presets, beam/temp/VAD) + fix whisper-large-v3 parsing&#10;* add prompt templates + per-run custom summary prompt and LLM quality knobs&#10;* replace fake progress with server-driven stages + ETA&#10;* unify results storage, fix speaker labels without diarization, and make caches param-aware" />
-    <option name="LAST_COMMIT_MESSAGE" value="feat: redesign InsightAudio pipeline (jobs, sessions, tabs, quality controls)&#10;* add background job processing (Celery + Redis) with persistent Job/User storage&#10;* implement “My Jobs” list + secure downloads for recent results&#10;* split UI into Audio / Documents / My Jobs tabs&#10;* expose key ASR quality params (language, presets, beam/temp/VAD) + fix whisper-large-v3 parsing&#10;* add prompt templates + per-run custom summary prompt and LLM quality knobs&#10;* replace fake progress with server-driven stages + ETA&#10;* unify results storage, fix speaker labels without diarization, and make caches param-aware" />
+    <MESSAGE value="add GPU support" />
+    <MESSAGE value="feat: add ASR engine/model selection, honest progress/ETA, and robust jobs downloads&#10;&#10;- support auto/faster-whisper/openai-whisper engines with recommended labels and engine-aware params&#10;- implement live ASR progress (≤2s updates) for faster-whisper and reliable ETA fallback for openai-whisper&#10;- unify results storage via job_dir + manifest-only downloads (secure, resumable)&#10;- enforce chunked uploads, SQLite WAL/timeout, and TTL cleanup&#10;- expand prompt templates + per-run editable prompts and LLM tuning" />
+    <MESSAGE value="fixing model download" />
+    <option name="LAST_COMMIT_MESSAGE" value="fixing model download" />
   </component>
 </project>

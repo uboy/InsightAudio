@@ -1,6 +1,8 @@
 # GPU-enabled Dockerfile для использования CUDA
 # Использование: docker build -f Dockerfile.gpu -t insightaudio:gpu .
-FROM nvidia/cuda:11.8.0-cudnn8-runtime-ubuntu22.04
+# Используем образ с cuDNN для поддержки PyTorch CUDA операций
+# Используем devel образ для полной поддержки cuDNN (включая libcudnn_ops.so)
+FROM nvidia/cuda:12.9.0-cudnn-runtime-ubuntu22.04
 
 # Python 3.10
 RUN apt-get update && apt-get install -y --no-install-recommends \
@@ -15,7 +17,9 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     gcc \
     g++ \
     libsndfile1 \
+    libgomp1 \
     tesseract-ocr \
+    gosu \
     && rm -rf /var/lib/apt/lists/* \
     && ln -s /usr/bin/python3.10 /usr/bin/python
 
@@ -27,10 +31,15 @@ COPY requirements.txt .
 # Install Python dependencies
 RUN pip3 install --no-cache-dir --upgrade pip setuptools wheel \
     && pip3 install --no-cache-dir -r requirements.txt \
-    && pip3 install --no-cache-dir torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cu118
+    && pip3 install --no-cache-dir torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cu121
 
 # Workaround for this package
 RUN pip3 install --no-cache-dir --no-build-isolation "nemo-toolkit[asr]==1.23.0"
+
+# Prepare writable dirs for non-root user
+RUN mkdir -p /app/logs /app/results /tmp/mplcache && \
+    mkdir -p /models /config && \
+    chown -R 1000:1000 /app /models /config /tmp
 
 # Copy application code and default configs
 COPY app/ ./app/
@@ -43,5 +52,9 @@ RUN mkdir -p /models /config /tmp
 
 EXPOSE 55667
 
+COPY entrypoint.sh /app/entrypoint.sh
+RUN chmod +x /app/entrypoint.sh
+
+ENTRYPOINT ["/app/entrypoint.sh"]
 CMD ["python3", "-m", "uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "55667"]
 

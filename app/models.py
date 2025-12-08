@@ -38,12 +38,28 @@ def _get_whisper_device() -> str:
             device_count = torch.cuda.device_count()
             LOGGER.info("Количество CUDA устройств: %d", device_count)
             if device_count > 0:
-                device_name = torch.cuda.get_device_name(0)
-                device_capability = torch.cuda.get_device_capability(0)
-                LOGGER.info("CUDA устройство #0: %s (Compute Capability: %s.%s)", 
-                           device_name, device_capability[0], device_capability[1])
-                LOGGER.info("CUDA доступна, используется GPU")
-                return "cuda"
+                try:
+                    device_name = torch.cuda.get_device_name(0)
+                    device_capability = torch.cuda.get_device_capability(0)
+                    LOGGER.info("CUDA устройство #0: %s (Compute Capability: %s.%s)", 
+                               device_name, device_capability[0], device_capability[1])
+                    
+                    # Проверяем доступность cuDNN (пробуем создать простой тензор и выполнить операцию)
+                    try:
+                        test_tensor = torch.zeros(1, device="cuda")
+                        # Пробуем операцию, которая требует cuDNN
+                        test_result = torch.nn.functional.conv1d(test_tensor.unsqueeze(0), torch.ones(1, 1, 1, device="cuda"))
+                        del test_tensor, test_result
+                        torch.cuda.empty_cache()
+                        LOGGER.info("CUDA доступна, cuDNN работает, используется GPU")
+                        return "cuda"
+                    except Exception as cudnn_error:
+                        LOGGER.warning("CUDA доступна, но cuDNN не работает: %s. Используется CPU", str(cudnn_error))
+                        LOGGER.warning("Ошибка cuDNN может быть из-за несовместимости версий. Рекомендуется использовать Dockerfile.gpu с правильной версией cuDNN")
+                        return "cpu"
+                except Exception as cuda_error:
+                    LOGGER.warning("Ошибка при проверке CUDA устройства: %s. Используется CPU", str(cuda_error))
+                    return "cpu"
             else:
                 LOGGER.warning("CUDA доступна, но устройств не найдено, используется CPU")
                 return "cpu"
@@ -302,7 +318,46 @@ def _get_whisper_cache_dir():
 def is_model_downloaded(model_name, model_type):
     """Проверяет наличие модели в каталоге хранения"""
     if model_type == "transcribe":
-        if model_name.startswith("whisper") or model_name.startswith("faster-whisper"):
+        if model_name.startswith("faster-whisper"):
+            # faster-whisper хранит модели в поддиректориях кэша HuggingFace
+            cache_dir = _get_whisper_cache_dir()
+            LOGGER.debug("Проверка модели Faster-Whisper '%s' в каталоге: %s", model_name, cache_dir)
+            
+            if not os.path.exists(cache_dir):
+                return False
+            
+            # Извлекаем базовое имя без префикса faster-whisper-
+            base_name = model_name.replace("faster-whisper-", "")
+            
+            # faster-whisper использует HuggingFace Hub для хранения моделей
+            # Модели хранятся в структуре: cache_dir/models--guillaumekln--faster-whisper-{model_name}/
+            # Или в более новой версии: cache_dir/models--Systran--faster-whisper-{model_name}/
+            # ВАЖНО: НЕ проверяем файлы .pt/.bin в корне, так как они могут быть от openai-whisper!
+            
+            # Проверяем несколько возможных путей HuggingFace Hub
+            possible_paths = [
+                os.path.join(cache_dir, f"models--guillaumekln--faster-whisper-{base_name}"),
+                os.path.join(cache_dir, f"models--Systran--faster-whisper-{base_name}"),
+                os.path.join(cache_dir, f"faster-whisper-{base_name}"),
+            ]
+            
+            # НЕ проверяем стандартные файлы .pt/.bin в корне кэш-директории,
+            # так как они могут быть от openai-whisper и это приведет к путанице!
+            # faster-whisper всегда использует структуру HuggingFace Hub
+            
+            # Проверяем директории HuggingFace
+            for model_dir in possible_paths:
+                if os.path.exists(model_dir) and os.path.isdir(model_dir):
+                    # Проверяем наличие файлов модели внутри директории
+                    for root, dirs, files in os.walk(model_dir):
+                        for file in files:
+                            if file.endswith(('.pt', '.bin', '.safetensors')) and os.path.getsize(os.path.join(root, file)) > 0:
+                                LOGGER.debug("Модель Faster-Whisper найдена в директории: %s", model_dir)
+                                return True
+            
+            LOGGER.debug("Модель Faster-Whisper '%s' не найдена в каталоге %s", model_name, cache_dir)
+            return False
+        elif model_name.startswith("whisper"):
             # Whisper сохраняет модели в кеш
             cache_dir = _get_whisper_cache_dir()
             LOGGER.debug("Проверка модели '%s' в каталоге: %s", model_name, cache_dir)
@@ -310,8 +365,8 @@ def is_model_downloaded(model_name, model_type):
             if not os.path.exists(cache_dir):
                 return False
             
-            # Извлекаем базовое имя без префикса whisper- или faster-whisper-
-            base_name = model_name.replace("whisper-", "").replace("faster-whisper-", "")
+            # Извлекаем базовое имя без префикса whisper-
+            base_name = model_name.replace("whisper-", "")
             
             # Определяем точное имя файла на основе модели
             # Для точной проверки: если модель называется whisper-large-v3, ищем только large-v3.pt
@@ -651,19 +706,49 @@ def download_model(model_name, model_type, backend: Optional[str] = None):
                 set_model_downloaded(model_name, model_type)
                 LOGGER.info("Статус модели '%s' обновлен на 'скачано' в JSON файле", model_name)
             elif model_name.startswith("faster-whisper"):
-                # faster-whisper использует другой API, модели скачиваются автоматически при первом использовании
-                # Здесь просто проверяем, что пакет установлен
+                # faster-whisper использует другой API, модели скачиваются автоматически при создании WhisperModel
                 try:
                     from faster_whisper import WhisperModel
                 except ImportError:
                     raise ImportError("Пакет faster-whisper не установлен. Установите: pip install faster-whisper")
-                # Для faster-whisper модели скачиваются автоматически при создании WhisperModel
+                
                 # Используем специальную функцию для извлечения имени (сохраняет версии типа -v3)
                 whisper_model_name = _extract_faster_whisper_model_name(model_name)
                 if not whisper_model_name:
                     raise ValueError(f"Не удалось определить имя модели Faster-Whisper из '{model_name}'")
-                # Модель будет скачана при первом использовании в transcriber
-                LOGGER.info("Модель Faster-Whisper '%s' будет скачана автоматически при первом использовании", whisper_model_name)
+                
+                # Получаем кэш директорию
+                cache_dir = _get_whisper_cache_dir()
+                os.makedirs(cache_dir, exist_ok=True)
+                
+                # Определяем устройство для загрузки
+                device = _get_whisper_device()
+                compute_type = "float16" if device == "cuda" else "int8"
+                
+                LOGGER.info("Скачивание модели Faster-Whisper '%s' в %s (device: %s, compute_type: %s)", 
+                           whisper_model_name, cache_dir, device, compute_type)
+                
+                # Создаем модель - это автоматически скачает её если она не скачана
+                try:
+                    whisper_model = WhisperModel(
+                        whisper_model_name,
+                        device=device,
+                        compute_type=compute_type,
+                        download_root=cache_dir,
+                    )
+                    LOGGER.info("Модель Faster-Whisper '%s' успешно загружена/скачана", whisper_model_name)
+                    
+                    # Проверяем что модель действительно скачана
+                    if is_model_downloaded(model_name, model_type):
+                        set_model_downloaded(model_name, model_type)
+                        LOGGER.info("Статус модели '%s' обновлен на 'скачано'", model_name)
+                    else:
+                        LOGGER.warning("Модель '%s' загружена, но проверка не прошла. Модель будет доступна при использовании.", model_name)
+                        # Все равно помечаем как скачанную, так как она загружена в память
+                        set_model_downloaded(model_name, model_type)
+                except Exception as e:
+                    LOGGER.error("Ошибка при скачивании модели Faster-Whisper '%s': %s", whisper_model_name, e)
+                    raise RuntimeError(f"Не удалось скачать модель Faster-Whisper '{whisper_model_name}': {str(e)}")
             elif model_name == "vosk-ru":
                 model_url = "https://alphacephei.com/vosk/models/vosk-model-ru-0.22.zip"
                 model_dest = os.path.join(MODELS_STORAGE, model_name)
