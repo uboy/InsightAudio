@@ -31,6 +31,7 @@ def _init_dirs():
     cfg = config_manager.get_config()
     results_dir = os.path.abspath(cfg.get("RESULTS_DIR", "/tmp"))
     log_dir = os.path.abspath(cfg.get("LOG_DIR", os.path.join(BASE_DIR, "..", "logs")))
+    # If running as non-root inside container, ensure dirs exist and writable
     os.makedirs(results_dir, exist_ok=True)
     os.makedirs(log_dir, exist_ok=True)
     os.makedirs(os.path.join(log_dir, "requests"), exist_ok=True)

@@ -45,12 +45,28 @@ def _get_device() -> str:
             device_count = torch.cuda.device_count()
             logger.info("Количество CUDA устройств: %d", device_count)
             if device_count > 0:
-                device_name = torch.cuda.get_device_name(0)
-                device_capability = torch.cuda.get_device_capability(0)
-                logger.info("CUDA устройство #0: %s (Compute Capability: %s.%s)", 
-                           device_name, device_capability[0], device_capability[1])
-                logger.info("CUDA доступна, используется GPU")
-                return "cuda"
+                try:
+                    device_name = torch.cuda.get_device_name(0)
+                    device_capability = torch.cuda.get_device_capability(0)
+                    logger.info("CUDA устройство #0: %s (Compute Capability: %s.%s)", 
+                               device_name, device_capability[0], device_capability[1])
+                    
+                    # Проверяем доступность cuDNN (пробуем создать простой тензор и выполнить операцию)
+                    try:
+                        test_tensor = torch.zeros(1, device="cuda")
+                        # Пробуем операцию, которая требует cuDNN
+                        test_result = torch.nn.functional.conv1d(test_tensor.unsqueeze(0), torch.ones(1, 1, 1, device="cuda"))
+                        del test_tensor, test_result
+                        torch.cuda.empty_cache()
+                        logger.info("CUDA доступна, cuDNN работает, используется GPU")
+                        return "cuda"
+                    except Exception as cudnn_error:
+                        logger.warning("CUDA доступна, но cuDNN не работает: %s. Используется CPU", str(cudnn_error))
+                        logger.warning("Ошибка cuDNN может быть из-за несовместимости версий. Рекомендуется использовать Dockerfile.gpu с правильной версией cuDNN")
+                        return "cpu"
+                except Exception as cuda_error:
+                    logger.warning("Ошибка при проверке CUDA устройства: %s. Используется CPU", str(cuda_error))
+                    return "cpu"
             else:
                 logger.warning("CUDA доступна, но устройств не найдено, используется CPU")
                 return "cpu"
@@ -414,13 +430,29 @@ def transcribe_with_faster_whisper(
     cache_dir = _get_whisper_cache_dir()
     os.makedirs(cache_dir, exist_ok=True)
     
-    # Создаем модель faster-whisper
-    whisper_model = WhisperModel(
-        whisper_name,
-        device=device,
-        compute_type=compute_type,
-        download_root=cache_dir,
-    )
+    # Создаем модель faster-whisper с обработкой ошибок cuDNN
+    try:
+        whisper_model = WhisperModel(
+            whisper_name,
+            device=device,
+            compute_type=compute_type,
+            download_root=cache_dir,
+        )
+    except Exception as cudnn_error:
+        error_msg = str(cudnn_error).lower()
+        if "cudnn" in error_msg or "libcudnn" in error_msg or "invalid handle" in error_msg:
+            logger.warning("Ошибка cuDNN при загрузке модели на GPU: %s. Переключаемся на CPU", str(cudnn_error))
+            device = "cpu"
+            compute_type = "int8"
+            logger.info("Повторная загрузка модели Faster-Whisper '%s' на устройство: %s (compute_type: %s)", whisper_name, device, compute_type)
+            whisper_model = WhisperModel(
+                whisper_name,
+                device=device,
+                compute_type=compute_type,
+                download_root=cache_dir,
+            )
+        else:
+            raise
     
     # Формируем параметры для transcribe
     transcribe_kwargs = {}
@@ -440,7 +472,24 @@ def transcribe_with_faster_whisper(
     last_progress_time = 0
     import time
     
-    segments_generator, info = whisper_model.transcribe(audio_path, **transcribe_kwargs)
+    try:
+        segments_generator, info = whisper_model.transcribe(audio_path, **transcribe_kwargs)
+    except Exception as cudnn_runtime_err:
+        err_text = str(cudnn_runtime_err).lower()
+        if "cudnn" in err_text or "sublibrary_version_mismatch" in err_text or "cudnn_status" in err_text:
+            logger.warning("Ошибка cuDNN во время инференса: %s. Переключаемся на CPU и повторяем.", cudnn_runtime_err)
+            # Пересоздаем модель на CPU и пробуем снова
+            device = "cpu"
+            compute_type = "int8"
+            whisper_model = WhisperModel(
+                whisper_name,
+                device=device,
+                compute_type=compute_type,
+                download_root=cache_dir,
+            )
+            segments_generator, info = whisper_model.transcribe(audio_path, **transcribe_kwargs)
+        else:
+            raise
     
     # Обрабатываем сегменты с обновлением прогресса
     for segment in segments_generator:

@@ -1,39 +1,68 @@
 services:
   insightaudio:
-    build: .
+    build:
+      context: .
+      dockerfile: Dockerfile.gpu
     container_name: insightaudio
+    environment:
+      - MODEL_DIR=/models
+      - CONFIG_DIR=/config
+      - CELERY_BROKER_URL=redis://redis:6379/0
+      - CELERY_RESULT_BACKEND=redis://redis:6379/0
+      - LOG_DIR=/app/logs
+      - RESULTS_DIR=/app/results
+      - MPLCONFIGDIR=/tmp/mplcache
+      - APP_UID=1000
+      - APP_GID=1000
+      - LD_LIBRARY_PATH=/usr/local/lib/python3.10/dist-packages/ctranslate2.libs:/usr/local/nvidia/lib:/usr/local/nvidia/lib64
     ports:
       - "55667:55667"
     volumes:
       - ./models:/models
       - ./config:/config
       - ./tmp:/tmp
-    environment:
-      - MODEL_DIR=/models
-      - CONFIG_DIR=/config
-      - CELERY_BROKER_URL=redis://redis:6379/0
-      - CELERY_RESULT_BACKEND=redis://redis:6379/0
+      - ./logs:/app/logs
+      - ./results:/app/results
+    # Поддержка GPU (раскомментируйте если нужен GPU)
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [gpu]
     restart: unless-stopped
   worker:
-    build: .
+    build:
+      context: .
+      dockerfile: Dockerfile.gpu
     container_name: insightaudio-worker
-    command: celery -A app.celery_app.celery_app worker --loglevel=INFO --beat
     environment:
       - MODEL_DIR=/models
       - CONFIG_DIR=/config
       - CELERY_BROKER_URL=redis://redis:6379/0
       - CELERY_RESULT_BACKEND=redis://redis:6379/0
+      - LOG_DIR=/app/logs
+      - RESULTS_DIR=/app/results
+      - MPLCONFIGDIR=/tmp/mplcache
+      - APP_UID=1000
+      - APP_GID=1000
+      - LD_LIBRARY_PATH=/usr/local/lib/python3.10/dist-packages/ctranslate2.libs:/usr/local/nvidia/lib:/usr/local/nvidia/lib64
+
+    command: celery -A app.celery_app.celery_app worker --loglevel=INFO -P solo
     volumes:
       - ./models:/models
       - ./config:/config
       - ./tmp:/tmp
+      - ./logs:/app/logs
+      - ./results:/app/results
     # Поддержка GPU (раскомментируйте если нужен GPU)
     deploy:
        resources:
          reservations:
            devices:
              - driver: nvidia
-               count: 1
+               count: all
                capabilities: [gpu]
     depends_on:
       - redis
