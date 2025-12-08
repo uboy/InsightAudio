@@ -11,7 +11,7 @@
     "DEFAULT_TRANSCRIBE_MODEL": "whisper-tiny",
     "DEFAULT_SUMMARIZE_MODEL": "llama3:8b",
     "SUMMARY_BACKEND": "ollama",
-    "OLLAMA_API_BASE": "http://tsnnlx12bs02.ad.telmast.com:11434",
+    "OLLAMA_API_BASE": "http://localhost:11434",
     "DEFAULT_TRANSLATE_MODEL": "nllb-200:3.3b",
     "DEFAULT_TRANSLATION_MODE": "block",
     "TRANSLATION_TARGET_LANG": "ru",

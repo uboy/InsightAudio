@@ -5,16 +5,23 @@ from datetime import datetime
 
 RESULTS_DIR = "/tmp"  # Можно сменить на config/results/ для логики с volume
 
-def handle_upload(upload_file, save_dir=RESULTS_DIR):
+def handle_upload(upload_file, save_dir=RESULTS_DIR, chunk_size: int = 8 * 1024 * 1024):
     """
-    Обрабатывает загрузку файла (из FastAPI UploadFile), сохраняет во временную директорию.
+    Обрабатывает загрузку файла потоково (chunks 1-8MB) без чтения целиком в память.
     Returns: абсолютный путь к файлу
     """
     filename = clean_filename(upload_file.filename)
     save_path = os.path.join(save_dir, filename)
     upload_file.file.seek(0)
+    
+    # Потоковая запись чанками
     with open(save_path, "wb") as f:
-        f.write(upload_file.file.read())
+        while True:
+            chunk = upload_file.file.read(chunk_size)
+            if not chunk:
+                break
+            f.write(chunk)
+    
     return save_path
 
 def clean_filename(filename):

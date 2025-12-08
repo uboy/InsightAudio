@@ -448,6 +448,23 @@ def _extract_whisper_model_name(model_name: str) -> Optional[str]:
     return None
 
 
+def _extract_faster_whisper_model_name(model_name: str) -> Optional[str]:
+    """Извлекает имя модели для faster-whisper (сохраняет версии типа -v3)"""
+    if not model_name.startswith("faster-whisper") and not model_name.startswith("whisper"):
+        return None
+    # Убираем префиксы
+    base = model_name.replace("faster-whisper-", "").replace("whisper-", "")
+    # Для faster-whisper сохраняем версии: tiny, base, small, medium, large-v2, large-v3 и т.д.
+    # Убираем только .en и -int8
+    base = base.split(".")[0]  # убираем .en
+    base = base.replace("-int8", "")
+    # Проверяем что имя валидное
+    valid_names = ["tiny", "base", "small", "medium", "large"]
+    if base in valid_names or base.startswith("large-"):
+        return base
+    return None
+
+
 def download_model(model_name, model_type, backend: Optional[str] = None):
     """Скачивает модель, если не скачана; обновляет статус в клиенте"""
     try:
@@ -641,11 +658,12 @@ def download_model(model_name, model_type, backend: Optional[str] = None):
                 except ImportError:
                     raise ImportError("Пакет faster-whisper не установлен. Установите: pip install faster-whisper")
                 # Для faster-whisper модели скачиваются автоматически при создании WhisperModel
-                # Просто проверяем, что имя модели корректное
-                whisper_model_name = _extract_whisper_model_name(model_name)
+                # Используем специальную функцию для извлечения имени (сохраняет версии типа -v3)
+                whisper_model_name = _extract_faster_whisper_model_name(model_name)
                 if not whisper_model_name:
                     raise ValueError(f"Не удалось определить имя модели Faster-Whisper из '{model_name}'")
                 # Модель будет скачана при первом использовании в transcriber
+                LOGGER.info("Модель Faster-Whisper '%s' будет скачана автоматически при первом использовании", whisper_model_name)
             elif model_name == "vosk-ru":
                 model_url = "https://alphacephei.com/vosk/models/vosk-model-ru-0.22.zip"
                 model_dest = os.path.join(MODELS_STORAGE, model_name)

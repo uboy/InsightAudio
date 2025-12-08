@@ -402,18 +402,76 @@ def get_job(request: Request, job_id: str, db: Session = Depends(get_session)):
 
 @app.get("/api/jobs/{job_id}/download/{asset_name}")
 def download_asset(request: Request, job_id: str, asset_name: str, db: Session = Depends(get_session)):
+    """
+    Безопасное скачивание файла из job.
+    Проверки:
+    1. Job принадлежит текущему user
+    2. asset_name есть в manifest
+    3. Файл реально существует внутри job_dir
+    4. Защита от path traversal (только имя файла, без пути)
+    """
     user = _get_user(request, db)
     job = db.get(Job, job_id)
-    _check_owner(job, user)
+    
+    if not job:
+        raise HTTPException(status_code=404, detail="Задача не найдена")
+    
+    # Проверка ownership
+    if job.user_id != user.id:
+        raise HTTPException(status_code=403, detail="Доступ запрещен")
+    
+    # Проверка manifest
     manifest = job.result_manifest_json or []
-    names = {item.get("name") for item in manifest if isinstance(item, dict)}
-    if asset_name not in names:
-        raise HTTPException(status_code=404, detail="Файл не найден")
+    if not isinstance(manifest, list):
+        raise HTTPException(status_code=500, detail="Некорректный manifest")
+    
+    # Проверяем что asset_name есть в manifest
+    manifest_item = None
+    for item in manifest:
+        if isinstance(item, dict) and item.get("name") == asset_name:
+            manifest_item = item
+            break
+    
+    if not manifest_item:
+        raise HTTPException(status_code=404, detail="Файл не найден в manifest")
+    
+    # Защита от path traversal: проверяем что asset_name не содержит путь
+    if os.path.sep in asset_name or os.path.altsep and os.path.altsep in asset_name:
+        raise HTTPException(status_code=400, detail="Некорректное имя файла")
+    
+    # Проверяем что файл существует внутри job_dir
     job_dir = build_user_job_dir(user.id, job_id)
     filepath = os.path.join(job_dir, asset_name)
-    if not os.path.exists(filepath):
+    
+    # Дополнительная проверка: реальный путь файла должен быть внутри job_dir
+    try:
+        real_filepath = os.path.realpath(filepath)
+        real_job_dir = os.path.realpath(job_dir)
+        if not real_filepath.startswith(real_job_dir):
+            raise HTTPException(status_code=403, detail="Доступ запрещен: файл вне job_dir")
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Ошибка при проверке пути: {str(e)}")
+    
+    if not os.path.exists(filepath) or not os.path.isfile(filepath):
         raise HTTPException(status_code=404, detail="Файл не найден")
-    return FileResponse(filepath, media_type="application/octet-stream", filename=asset_name)
+    
+    # Определяем media_type по расширению
+    ext = os.path.splitext(asset_name)[1].lower()
+    media_types = {
+        ".txt": "text/plain",
+        ".json": "application/json",
+        ".md": "text/markdown",
+        ".pdf": "application/pdf",
+        ".docx": "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+        ".pptx": "application/vnd.openxmlformats-officedocument.presentationml.presentation",
+        ".xlsx": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        ".wav": "audio/wav",
+        ".mp3": "audio/mpeg",
+        ".mp4": "video/mp4",
+    }
+    media_type = media_types.get(ext, "application/octet-stream")
+    
+    return FileResponse(filepath, media_type=media_type, filename=asset_name)
 
 
 def _is_terminal(job: Job) -> bool:

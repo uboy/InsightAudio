@@ -46,16 +46,80 @@
 
 5. Откройте [http://localhost:55667](http://localhost:55667) — отправляйте задачи. Теперь все задачи выполняются фоном через Celery/Redis, статус обновляется по SSE или опросу `/api/jobs/{id}`.
 
-### Ключевые изменения
-- Celery + Redis worker (`docker-compose.yml`) для фоновых задач, TTL cleanup — переменные `CELERY_BROKER_URL`, `CELERY_RESULT_BACKEND`.
-- SQLite + SQLAlchemy модели `User`, `Job` (cookie `insight_session`) — хранение статуса, стадии, прогресса, ETA, manifest.
-- Новые API: `POST /api/jobs/audio`, `POST /api/jobs/doc_translate`, `GET /api/jobs`, `GET /api/jobs/{id}`, `GET /api/jobs/{id}/download/{asset}`, SSE `/api/jobs/{id}/events`.
-- Хранение результатов: `RESULTS_DIR/<user_id>/<job_id>/` с `transcript.txt/json`, `summary.md`, `translation.*`, `meta.json`, manifest в БД.
-- UI вкладки: Audio / Documents / My Jobs; SSE обновления; загрузка моделей; prompt templates с редактированием на сессию.
-- ASR пресеты (quality/balanced/fast) + advanced (beam, temperature, VAD, no_speech_threshold, loudnorm). Исправлен парсинг Whisper имен (`whisper-large-v3`, `.en` и т.п.).
-- Промпты: `config/prompt_templates.json` (meeting, lecture, online_training, interview, sales_call, support_call, brainstorm, standup) и выбор в UI с автоподстановкой в textarea.
-- Диаризация: фикс меток без диаризации (все `Speaker 1`), опция в UI.
-- Кэш транскрипции учитывает модель, язык, задачу, beam, temperature, VAD, no_speech_threshold, hash файла.
+### Архитектура и ключевые изменения
+
+#### Фоновая обработка задач
+- **Celery + Redis**: Все задачи (транскрипция, пересказ, перевод) выполняются в фоне через Celery worker
+- **SSE (Server-Sent Events)**: Реальное время обновления статуса задач без polling
+- **Job Queue**: Задачи продолжают выполняться даже при закрытии вкладки браузера
+- **TTL Cleanup**: Автоматическая очистка устаревших jobs и файлов через Celery beat (настраивается через `JOB_TTL_DAYS`)
+
+#### База данных и сессии
+- **SQLite + SQLAlchemy**: Модели `User` и `Job` для хранения состояния задач
+- **Cookie сессии**: `insight_session` (UUID, HttpOnly, SameSite=Lax, 90 дней)
+- **SQLite WAL mode**: Включен для улучшенной конкурентности
+- **Абсолютные пути**: Гарантирована стабильность путей между web/worker
+
+#### API Endpoints
+- `POST /api/jobs/audio` — создание задачи транскрипции аудио/видео
+- `POST /api/jobs/doc_translate` — создание задачи перевода документа
+- `GET /api/jobs` — список задач текущего пользователя
+- `GET /api/jobs/{id}` — детали задачи
+- `GET /api/jobs/{id}/download/{asset_name}` — безопасное скачивание файла из задачи
+- `GET /api/jobs/{id}/events` — SSE поток событий задачи
+- `POST /api/check_custom_api` — проверка подключения к пользовательскому API
+
+#### Хранение результатов
+- **Структура**: `RESULTS_DIR/<user_id>/<job_id>/`
+- **Файлы**: `input_original.*`, `audio.wav`, `transcript.txt`, `transcript.json`, `summary.md`, `translation.*`, `meta.json`
+- **Manifest**: Полная информация о файлах (имя, тип, размер, дата создания) в БД
+- **Безопасность**: Проверка ownership, manifest и защита от path traversal
+
+#### ASR (Automatic Speech Recognition)
+- **Движки**: `auto` (автовыбор), `faster-whisper` (рекомендуется), `openai-whisper` (legacy)
+- **Модели**: Whisper (tiny, base, small, medium, large, large-v2, large-v3), Vosk Russian
+- **Пресеты**: `quality` (beam=5, temperature=0.0, vad_filter=true, loudnorm=true), `balanced` (beam=3), `fast` (beam=1)
+- **Advanced параметры**: beam_size, temperature, vad_filter (только faster-whisper), no_speech_threshold, loudnorm
+- **Кэширование**: Учитывает модель, движок, язык, beam, temperature, VAD, hash файла (TTL 7 дней)
+- **Прогресс/ETA**: Честный прогресс для faster-whisper (обновление каждые ≤2 сек), RTF-based ETA
+
+#### Пересказ (Summary)
+- **Backend**: Ollama, llama.cpp, Custom API
+- **Промпты**: Шаблоны из `config/prompt_templates.json` (meeting, lecture, interview, customer_call, standup, brainstorm, support_call, online_training)
+- **Чанкинг**: Автоматическое разбиение длинных транскрипций на чанки с последующим reduce
+- **Ревью**: Опциональная проверка/улучшение пересказа через отдельную модель
+- **Параметры**: temperature, top_p, max_tokens, num_ctx (из MODEL_TUNING)
+
+#### Переводчик документов
+- **Форматы**: DOCX, PPTX, XLSX, PDF, TXT
+- **Режимы**: Блочный (точнее) или единый запрос (быстрее)
+- **PDF Reflow**: Опция переформатирования PDF перед переводом
+- **Перевод изображений**: Режимы "notes" (заметки) или "full" (полный перевод)
+
+#### UI
+- **Вкладки**: Audio, Documents, My Jobs
+- **SSE обновления**: Автоматическое обновление статуса задач в реальном времени
+- **Загрузка моделей**: Проверка статуса и скачивание моделей через UI
+- **Prompt templates**: Выбор шаблона с автоподстановкой и возможностью редактирования
+- **Динамическое UI**: Скрытие/показ блоков в зависимости от выбранных опций
+
+#### Безопасность
+- **Проверка ownership**: Пользователь может скачивать только свои файлы
+- **Manifest validation**: Файлы проверяются по manifest перед скачиванием
+- **Path traversal protection**: Защита от `../` и других попыток доступа к файлам вне job_dir
+- **Chunked upload**: Потоковая загрузка файлов чанками (8MB) без чтения всего файла в память
+- **Size limits**: Настраиваемый лимит размера файла (`MAX_UPLOAD_MB`)
+
+#### GPU поддержка
+- **CUDA**: Автоматическое определение и использование GPU если доступно
+- **Fallback**: Автоматический переход на CPU если CUDA недоступна
+- **Конфигурация**: Управление через `USE_CUDA` в настройках
+- **Docker GPU**: Поддержка NVIDIA GPU через `docker-compose.yml` (раскомментируйте секцию `deploy`)
+
+#### Логирование
+- **Ротация логов**: `logs/server.log` с автоматической ротацией и архивацией
+- **Request logs**: Отдельные логи для каждой задачи в `logs/requests/<UUID>.log`
+- **Уровни**: DEBUG, INFO, WARNING, ERROR с настраиваемыми уровнями
 
 ---
 
@@ -182,7 +246,7 @@ http://localhost:55667
 - Используйте веб-интерфейс: загружайте свой аудио/видео файл, выбирайте и скачивайте необходимые модели, запускайте обработку и скачивайте результаты.
 - Выбор backend'а для пересказа (Ollama / llama.cpp / Custom API) и пользовательские настройки сохраняются в браузере.
 - Все системные логи пишутся в `logs/server.log`, а для каждой обработки создаётся отдельный файл в `logs/requests/<UUID>.log` и блок логов доступен на странице результатов.
-- Настройки Ollama API, списки моделей, пути хранения и прочие константы задаются в `config/default_settings.json`. При первом запуске рабочий конфиг `config/config.json` создаётся автоматически с учётом этих значений (по умолчанию Ollama API смотрит на `http://tsnnlx12bs02.ad.telmast.com:11434`).
+- Настройки Ollama API, списки моделей, пути хранения и прочие константы задаются в `config/default_settings.json`. При первом запуске рабочий конфиг `config/config.json` создаётся автоматически с учётом этих значений (по умолчанию Ollama API смотрит на `http://localhost:11434`).
 - Для перевода документов используйте тот же веб-интерфейс: настройте целевой язык и модель (`DEFAULT_TRANSLATE_MODEL`, например `nllb-200:3.3b`), загрузите файл и скачайте переведённый вариант. Если перевод оказывается слишком длинным, сервис автоматически создаёт сокращённый текст и комментарий с полным переводом.
 
 ***

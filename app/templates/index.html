@@ -64,6 +64,13 @@
                     </select>
                         <button class="download-btn" type="button" id="transcribe_download_btn" style="display: none;" onclick="downloadSelectedModel('transcribe')">Скачать</button>
                     </div>
+                    <label for="asr_engine">Движок распознавания:</label>
+                    <select id="asr_engine">
+                        <option value="auto">Auto (рекомендуется faster-whisper)</option>
+                        <option value="faster_whisper">Faster-Whisper 🟩 Recommended</option>
+                        <option value="openai_whisper">OpenAI Whisper 🟨 Legacy</option>
+                    </select>
+                    <div class="small" id="asr_engine_hint">Auto автоматически выберет лучший движок для выбранной модели</div>
                 </div>
 
                 <div class="models-section">
@@ -93,12 +100,13 @@
                         <input type="number" id="beam_size" min="1" max="10" step="1" placeholder="auto">
                         <label for="temperature">temperature</label>
                         <input type="number" id="temperature" min="0" max="1" step="0.1" placeholder="auto">
-                        <label for="vad_filter">VAD filter</label>
-                        <select id="vad_filter">
+                        <label for="vad_filter">VAD filter <span id="vad_filter_badge" style="font-size: 11px; color: #666;"></span></label>
+                        <select id="vad_filter" disabled>
                             <option value="">auto</option>
                             <option value="true">on</option>
                             <option value="false">off</option>
                         </select>
+                        <div class="small" id="vad_filter_hint" style="color: #666;">Доступно только для faster-whisper</div>
                         <label for="no_speech_threshold">no_speech_threshold</label>
                         <input type="number" id="no_speech_threshold" min="0" max="1" step="0.05" placeholder="auto">
                     </details>
@@ -328,6 +336,7 @@
     const STORAGE_KEYS = {
         backend: "insight_summary_backend",
         transcribeModel: "insight_transcribe_model",
+        asrEngine: "insight_asr_engine",
         summarizeModel: "insight_summarize_model",
         customApiUrl: "insight_custom_api_url",
         customApiModels: "insight_custom_api_models",
@@ -761,6 +770,11 @@
         populateSelect(summarizeSelect, {{ model_options.summarize | tojson }}, STORAGE_KEYS.summarizeModel, 'summarize');
         updateDownloadButtonsForType('transcribe');
         updateDownloadButtonsForType('summarize');
+        if(asrEngineSelect){
+            const savedEngine = localStorage.getItem(STORAGE_KEYS.asrEngine) || "auto";
+            asrEngineSelect.value = savedEngine;
+            updateAsrEngineUI();
+        }
         const defaultLang = "{{config.TRANSLATION_TARGET_LANG}}";
         ensureOption(targetLanguageSelect, defaultLang);
         const savedLang = localStorage.getItem(STORAGE_KEYS.translateTarget) || defaultLang;
@@ -825,7 +839,16 @@
     transcribeSelect.addEventListener("change", () => {
         localStorage.setItem(STORAGE_KEYS.transcribeModel, transcribeSelect.value);
         updateDownloadButtonsForType('transcribe');
+        if (asrEngineSelect) updateAsrEngineUI();
     });
+    
+    // Сохранение выбора движка ASR
+    if (asrEngineSelect) {
+        asrEngineSelect.addEventListener("change", () => {
+            localStorage.setItem(STORAGE_KEYS.asrEngine, asrEngineSelect.value);
+            updateAsrEngineUI();
+        });
+    }
     summarizeSelect.addEventListener("change", () => {
         localStorage.setItem(STORAGE_KEYS.summarizeModel, summarizeSelect.value);
         updateDownloadButtonsForType('summarize');
@@ -903,6 +926,10 @@
     const temperatureInput = document.getElementById("temperature");
     const vadFilterSelect = document.getElementById("vad_filter");
     const noSpeechThresholdInput = document.getElementById("no_speech_threshold");
+    const asrEngineSelect = document.getElementById("asr_engine");
+    const asrEngineHint = document.getElementById("asr_engine_hint");
+    const vadFilterBadge = document.getElementById("vad_filter_badge");
+    const vadFilterHint = document.getElementById("vad_filter_hint");
     const audioJobStatusEl = document.getElementById("audioJobStatus");
     const docJobStatusEl = document.getElementById("docJobStatus");
     const jobsListEl = document.getElementById("jobsList");
@@ -974,6 +1001,72 @@
             }
         });
     }
+    
+    // Обработчик для выбора движка ASR
+    function updateAsrEngineUI() {
+        if (!asrEngineSelect) return;
+        
+        const engine = asrEngineSelect.value;
+        const modelSelect = document.getElementById("transcribe_model");
+        const modelName = modelSelect ? modelSelect.value : "";
+        
+        // Обновляем подсказку
+        if (asrEngineHint) {
+            if (engine === "auto") {
+                const isFasterModel = modelName.startsWith("faster-whisper");
+                const isWhisperModel = modelName.startsWith("whisper");
+                if (isFasterModel) {
+                    asrEngineHint.textContent = "Auto выберет faster-whisper для этой модели";
+                } else if (isWhisperModel) {
+                    asrEngineHint.textContent = "Auto выберет faster-whisper (если доступен) или openai-whisper";
+                } else {
+                    asrEngineHint.textContent = "Auto автоматически выберет лучший движок для выбранной модели";
+                }
+            } else if (engine === "faster_whisper") {
+                asrEngineHint.textContent = "🟩 Faster-Whisper рекомендуется: быстрее и поддерживает VAD filter";
+            } else if (engine === "openai_whisper") {
+                asrEngineHint.textContent = "🟨 OpenAI Whisper (legacy): VAD filter не поддерживается";
+            }
+        }
+        
+        // Обновляем доступность vad_filter
+        const vadSupported = engine === "faster_whisper" || (engine === "auto" && modelName.startsWith("faster-whisper"));
+        if (vadFilterSelect) {
+            vadFilterSelect.disabled = !vadSupported;
+            if (vadSupported) {
+                vadFilterSelect.style.opacity = "1";
+            } else {
+                vadFilterSelect.style.opacity = "0.5";
+            }
+        }
+        if (vadFilterBadge) {
+            if (vadSupported) {
+                vadFilterBadge.textContent = "(faster-whisper)";
+                vadFilterBadge.style.color = "#0a0";
+            } else {
+                vadFilterBadge.textContent = "(только faster-whisper)";
+                vadFilterBadge.style.color = "#c00";
+            }
+        }
+        if (vadFilterHint) {
+            if (vadSupported) {
+                vadFilterHint.style.display = "none";
+            } else {
+                vadFilterHint.style.display = "block";
+            }
+        }
+    }
+    
+    if (asrEngineSelect) {
+        asrEngineSelect.addEventListener("change", updateAsrEngineUI);
+        // Также обновляем при изменении модели
+        const transcribeSelect = document.getElementById("transcribe_model");
+        if (transcribeSelect) {
+            transcribeSelect.addEventListener("change", updateAsrEngineUI);
+        }
+        // Вызываем при загрузке
+        setTimeout(updateAsrEngineUI, 100);
+    }
 
     function makeJobCard(job){
         const statusColor = job.status === 'success' ? '#0a0' : job.status === 'failed' ? '#c00' : '#0059b2';
@@ -1035,6 +1128,7 @@
         if(!fileInput.files.length){ showNotify('Выберите файл', true); return; }
         const params = {
             asr_model: document.getElementById('transcribe_model').value,
+            asr_engine: asrEngineSelect ? asrEngineSelect.value : 'auto',
             language: audioLanguageSelect.value,
             preset: presetSelect.value,
             enable_diarization: enableDiarizationCheckbox.checked,

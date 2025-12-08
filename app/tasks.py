@@ -1,11 +1,10 @@
 import json
 import logging
 import os
+import shutil
 import traceback
 from datetime import datetime
 from typing import Dict, List, Optional
-
-from celery import shared_task
 
 LOGGER = logging.getLogger("insightaudio.tasks")
 
@@ -111,6 +110,32 @@ def _write_text(path: str, content: str) -> str:
     return path
 
 
+def _add_manifest_item(manifest: List[Dict], file_path: str, kind: str, base_dir: str):
+    """Добавляет элемент в manifest с проверкой существования файла"""
+    if not os.path.exists(file_path):
+        return
+    file_name = os.path.basename(file_path)
+    # Проверяем что файл находится внутри base_dir (защита от path traversal)
+    try:
+        real_file_path = os.path.realpath(file_path)
+        real_base_dir = os.path.realpath(base_dir)
+        if not real_file_path.startswith(real_base_dir):
+            LOGGER.warning("Файл %s находится вне job_dir %s, пропускаем", file_path, base_dir)
+            return
+    except Exception as e:
+        LOGGER.warning("Ошибка при проверке пути файла %s: %s", file_path, e)
+        return
+    
+    size_bytes = os.path.getsize(file_path)
+    created_at = datetime.utcnow().isoformat()
+    manifest.append({
+        "name": file_name,
+        "kind": kind,
+        "size_bytes": size_bytes,
+        "created_at": created_at,
+    })
+
+
 def _save_manifest(
     base_dir: str,
     transcript_text: str,
@@ -118,29 +143,83 @@ def _save_manifest(
     translation_path: Optional[str],
     segments: Optional[List[Dict]] = None,
     meta: Optional[Dict] = None,
+    input_original_path: Optional[str] = None,
+    audio_wav_path: Optional[str] = None,
 ) -> List[Dict]:
+    """
+    Сохраняет результаты задачи и создает manifest.
+    Все файлы должны находиться внутри base_dir (job_dir).
+    """
     manifest: List[Dict] = []
+    
+    # Сохраняем input_original если указан
+    if input_original_path and os.path.exists(input_original_path):
+        # Копируем оригинальный файл в job_dir
+        original_name = os.path.basename(input_original_path)
+        original_ext = os.path.splitext(original_name)[1]
+        dest_original = os.path.join(base_dir, f"input_original{original_ext}")
+        try:
+            shutil.copy2(input_original_path, dest_original)
+            _add_manifest_item(manifest, dest_original, "input", base_dir)
+        except Exception as e:
+            LOGGER.warning("Не удалось скопировать оригинальный файл: %s", e)
+    
+    # Сохраняем audio.wav если указан
+    if audio_wav_path and os.path.exists(audio_wav_path):
+        # Копируем WAV файл в job_dir если он не там уже
+        wav_name = "audio.wav"
+        dest_wav = os.path.join(base_dir, wav_name)
+        try:
+            real_wav = os.path.realpath(audio_wav_path)
+            real_base = os.path.realpath(base_dir)
+            if not real_wav.startswith(real_base):
+                shutil.copy2(audio_wav_path, dest_wav)
+            else:
+                dest_wav = audio_wav_path
+            _add_manifest_item(manifest, dest_wav, "wav", base_dir)
+        except Exception as e:
+            LOGGER.warning("Не удалось сохранить WAV файл: %s", e)
+    
+    # Сохраняем transcript.txt
     transcript_path = os.path.join(base_dir, "transcript.txt")
     _write_text(transcript_path, transcript_text)
-    manifest.append({"name": "transcript.txt", "kind": "transcript"})
+    _add_manifest_item(manifest, transcript_path, "transcript_txt", base_dir)
+    
+    # Сохраняем transcript.json
     transcript_json_path = os.path.join(base_dir, "transcript.json")
     with open(transcript_json_path, "w", encoding="utf-8") as f:
         json.dump({"text": transcript_text, "segments": segments or []}, f, ensure_ascii=False, indent=2)
-    manifest.append({"name": "transcript.json", "kind": "transcript_json"})
+    _add_manifest_item(manifest, transcript_json_path, "transcript_json", base_dir)
 
+    # Сохраняем summary.md
     if summary_text is not None:
         summary_path = os.path.join(base_dir, "summary.md")
         _write_text(summary_path, summary_text)
-        manifest.append({"name": "summary.md", "kind": "summary"})
+        _add_manifest_item(manifest, summary_path, "summary_md", base_dir)
 
+    # Сохраняем translation
     if translation_path is not None and os.path.exists(translation_path):
-        manifest.append({"name": os.path.basename(translation_path), "kind": "translation"})
+        # Если translation_path не в job_dir, копируем его туда
+        real_translation = os.path.realpath(translation_path)
+        real_base = os.path.realpath(base_dir)
+        if not real_translation.startswith(real_base):
+            translation_name = os.path.basename(translation_path)
+            dest_translation = os.path.join(base_dir, translation_name)
+            try:
+                shutil.copy2(translation_path, dest_translation)
+                _add_manifest_item(manifest, dest_translation, "translation", base_dir)
+            except Exception as e:
+                LOGGER.warning("Не удалось скопировать файл перевода: %s", e)
+        else:
+            _add_manifest_item(manifest, translation_path, "translation", base_dir)
 
+    # Сохраняем meta.json
     if meta is not None:
         meta_path = os.path.join(base_dir, "meta.json")
         with open(meta_path, "w", encoding="utf-8") as f:
             json.dump(meta, f, ensure_ascii=False, indent=2)
-        manifest.append({"name": "meta.json", "kind": "meta"})
+        _add_manifest_item(manifest, meta_path, "meta", base_dir)
+    
     return manifest
 
 
@@ -165,16 +244,41 @@ def audio_job(self, job_id: str, user_id: str, params: Dict) -> str:
             job.params_json = params
 
             update_job(session, job_id, stage="transcribing", progress=25)
+            
+            # Определяем движок ASR
+            asr_engine = params.get("asr_engine", "auto")
+            
+            # Определяем vad_filter только для faster-whisper
+            vad_filter_value = None
+            if asr_engine == "faster_whisper" or (asr_engine == "auto" and params.get("asr_model", "").startswith("faster-whisper")):
+                vad_filter_value = preset.get("vad_filter")
+            elif asr_engine == "openai_whisper":
+                # vad_filter не поддерживается в openai-whisper
+                if preset.get("vad_filter") is not None:
+                    LOGGER.warning("Job %s: vad_filter не поддерживается в openai-whisper, игнорируется", job_id)
+                vad_filter_value = None
+            
+            # Callback для обновления прогресса (для faster-whisper)
+            def progress_callback(inner_progress: int, last_segment_end: float):
+                """Обновляет прогресс транскрипции"""
+                if duration_sec and duration_sec > 0:
+                    inner_fraction = min(1.0, last_segment_end / duration_sec)
+                    pct = _calc_progress("transcribing", inner_fraction)
+                    eta = _estimate_eta_transcribe(duration_sec, last_segment_end, params.get("rtf", 0.5) or 0.5)
+                    update_job(session, job_id, stage="transcribing", progress=pct, eta_seconds=eta)
+            
             transcription = transcriber.transcribe(
                 wav_path,
                 model=params.get("asr_model", "whisper-tiny"),
+                asr_engine=asr_engine,
                 language=params.get("language"),
                 beam_size=preset.get("beam_size"),
                 temperature=preset.get("temperature"),
-                vad_filter=preset.get("vad_filter"),
+                vad_filter=vad_filter_value,
                 no_speech_threshold=params.get("no_speech_threshold"),
                 enable_diarization=params.get("enable_diarization", True),
                 task=params.get("task"),
+                progress_callback=progress_callback if asr_engine in ("faster_whisper", "auto") else None,
             )
 
             transcript_text = transcription.get("text", "")
@@ -245,8 +349,22 @@ def audio_job(self, job_id: str, user_id: str, params: Dict) -> str:
 
             LOGGER.info("Job %s: Saving results", job_id)
             update_job(session, job_id, stage="saving", progress=_calc_progress("saving"))
-            meta = {"params": params, "duration_sec": duration_sec, "model": params.get("asr_model")}
-            manifest = _save_manifest(job_dir, transcript_text, summary_text, translation_path, segments=segments, meta=meta)
+            meta = {
+                "params": params, 
+                "duration_sec": duration_sec, 
+                "model": params.get("asr_model"),
+                "asr_engine": params.get("asr_engine", "auto"),
+            }
+            manifest = _save_manifest(
+                job_dir, 
+                transcript_text, 
+                summary_text, 
+                translation_path, 
+                segments=segments, 
+                meta=meta,
+                input_original_path=audio_path,
+                audio_wav_path=wav_path,
+            )
             LOGGER.info("Job %s: Results saved, manifest: %s", job_id, manifest)
             update_job(
                 session,
@@ -294,7 +412,40 @@ def doc_job(self, job_id: str, user_id: str, params: Dict) -> str:
                 translation_mode=params.get("translation_mode", "block"),
             )
             update_job(session, job_id, stage="saving", progress=90)
-            manifest = [{"name": os.path.basename(translated_path), "kind": "translation"}]
+            
+            # Копируем переведенный файл в job_dir если он не там уже
+            real_translated = os.path.realpath(translated_path)
+            real_job_dir = os.path.realpath(job_dir)
+            if not real_translated.startswith(real_job_dir):
+                # Файл не в job_dir, копируем его туда
+                translated_name = os.path.basename(translated_path)
+                dest_translated = os.path.join(job_dir, translated_name)
+                try:
+                    shutil.copy2(translated_path, dest_translated)
+                    translated_path = dest_translated
+                    LOGGER.info("Job %s: Скопирован файл перевода в job_dir: %s", job_id, dest_translated)
+                except Exception as e:
+                    LOGGER.error("Job %s: Не удалось скопировать файл перевода: %s", job_id, e)
+                    raise
+            
+            # Также копируем оригинальный файл в job_dir
+            input_path = params["input_path"]
+            if input_path and os.path.exists(input_path):
+                real_input = os.path.realpath(input_path)
+                if not real_input.startswith(real_job_dir):
+                    input_name = os.path.basename(input_path)
+                    input_ext = os.path.splitext(input_name)[1]
+                    dest_input = os.path.join(job_dir, f"input_original{input_ext}")
+                    try:
+                        shutil.copy2(input_path, dest_input)
+                        LOGGER.info("Job %s: Скопирован оригинальный файл в job_dir: %s", job_id, dest_input)
+                    except Exception as e:
+                        LOGGER.warning("Job %s: Не удалось скопировать оригинальный файл: %s", job_id, e)
+            
+            # Создаем manifest с правильной информацией
+            manifest = []
+            _add_manifest_item(manifest, translated_path, "translation", job_dir)
+            
             update_job(
                 session,
                 job_id,
@@ -318,11 +469,40 @@ def doc_job(self, job_id: str, user_id: str, params: Dict) -> str:
     return job_id
 
 
-@shared_task(name="app.tasks.cleanup_expired_jobs")
+@celery_app.task(name="app.tasks.cleanup_expired_jobs")
 def cleanup_expired_jobs():
+    """Периодическая задача для очистки устаревших jobs и файлов"""
+    from app import config_manager
+    from app.transcriber import _get_transcribe_cache_dir, CACHE_TTL
+    import time
+    
+    cfg = config_manager.get_config()
+    ttl_days = cfg.get("JOB_TTL_DAYS", 14)
+    
+    LOGGER.info("Запуск очистки устаревших jobs (TTL: %d дней)", ttl_days)
     try:
-        removed = prune_expired_jobs()
-        return {"removed": removed}
-    except Exception:
-        return {"removed": 0, "error": traceback.format_exc()}
+        removed_count = prune_expired_jobs(ttl_days=ttl_days)
+        LOGGER.info("Очистка завершена: удалено %d jobs", removed_count)
+        
+        # Также очищаем кэши транскрипций старше TTL
+        cache_dir = _get_transcribe_cache_dir()
+        cache_removed = 0
+        if os.path.exists(cache_dir):
+            cutoff_time = time.time() - CACHE_TTL.total_seconds()
+            for filename in os.listdir(cache_dir):
+                cache_path = os.path.join(cache_dir, filename)
+                try:
+                    if os.path.isfile(cache_path) and os.path.getmtime(cache_path) < cutoff_time:
+                        os.remove(cache_path)
+                        cache_removed += 1
+                except Exception as e:
+                    LOGGER.warning("Не удалось удалить кэш %s: %s", cache_path, e)
+        
+        if cache_removed > 0:
+            LOGGER.info("Удалено %d устаревших кэшей транскрипций", cache_removed)
+        
+        return {"removed_jobs": removed_count, "removed_cache": cache_removed}
+    except Exception as e:
+        LOGGER.error("Ошибка при очистке устаревших jobs: %s", e, exc_info=True)
+        raise
 

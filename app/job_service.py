@@ -1,5 +1,6 @@
 import json
 import os
+import shutil
 import uuid
 from datetime import datetime, timedelta
 from typing import Dict, List, Optional, Tuple
@@ -99,32 +100,57 @@ def build_user_job_dir(user_id: str, job_id: str) -> str:
 
 
 def prune_expired_jobs(ttl_days: int = 14) -> int:
-    """Deletes jobs and files older than TTL. Returns number of removed jobs."""
+    """
+    Удаляет jobs и файлы старше TTL.
+    Также удаляет связанные кэши при необходимости.
+    Returns: количество удаленных jobs.
+    """
+    import logging
+    logger = logging.getLogger("insightaudio.job_service")
+    
     cfg = config_manager.get_config()
     results_dir = os.path.abspath(cfg.get("RESULTS_DIR", "/tmp"))
     cutoff = datetime.utcnow() - timedelta(days=ttl_days)
     removed = 0
+    total_size_freed = 0
+    
     with session_scope() as session:
         old_jobs = session.execute(select(Job).where(Job.created_at < cutoff)).scalars().all()
+        logger.info("Найдено %d устаревших jobs для удаления (старше %d дней)", len(old_jobs), ttl_days)
+        
         for job in old_jobs:
             job_dir = os.path.join(results_dir, job.user_id, job.id)
+            job_size = 0
+            
             if os.path.exists(job_dir):
                 try:
-                    # best-effort removal
-                    for root, _, files in os.walk(job_dir, topdown=False):
+                    # Вычисляем размер перед удалением
+                    for root, _, files in os.walk(job_dir):
                         for f in files:
                             try:
-                                os.remove(os.path.join(root, f))
+                                file_path = os.path.join(root, f)
+                                job_size += os.path.getsize(file_path)
                             except OSError:
                                 pass
-                        try:
-                            os.rmdir(root)
-                        except OSError:
-                            pass
-                except OSError:
-                    pass
+                    
+                    # Удаляем файлы и директории
+                    import shutil
+                    shutil.rmtree(job_dir, ignore_errors=True)
+                    total_size_freed += job_size
+                except Exception as e:
+                    logger.warning("Ошибка при удалении job_dir %s: %s", job_dir, e)
+            
             session.delete(job)
             removed += 1
+        
         session.commit()
+    
+    if removed > 0:
+        logger.info(
+            "Удалено %d устаревших jobs, освобождено ~%.2f МБ",
+            removed,
+            total_size_freed / (1024 * 1024),
+        )
+    
     return removed
 

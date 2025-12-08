@@ -4,7 +4,7 @@ import os
 import shutil
 import subprocess
 from datetime import datetime, timedelta
-from typing import Dict, List, Optional, Union
+from typing import Dict, List, Optional, Union, Callable
 
 import whisper
 
@@ -97,6 +97,7 @@ def transcribe(
     input_path: str,
     model: str = "whisper-tiny",
     *,
+    asr_engine: str = "auto",  # auto | faster_whisper | openai_whisper
     language: Optional[str] = None,
     beam_size: Optional[int] = None,
     temperature: Optional[float] = None,
@@ -104,6 +105,7 @@ def transcribe(
     no_speech_threshold: Optional[float] = None,
     enable_diarization: bool = True,
     task: Optional[str] = None,
+    progress_callback: Optional[Callable[[int, float], None]] = None,  # Для faster-whisper прогресса: (progress_percent, last_segment_end)
 ) -> Dict[str, Union[str, List[Dict]]]:
     """
     Транскрипция аудио/видео-файла.
@@ -111,14 +113,33 @@ def transcribe(
         {"text": "...", "segments": [{"start": 0.0, "end": 1.5, "text": "..."}]}
     """
     file_hash = _get_file_hash(input_path)
+    
+    # Определяем движок для использования
+    if asr_engine == "auto":
+        # Автоматический выбор: предпочитаем faster-whisper для поддерживаемых моделей
+        if model.startswith("faster-whisper"):
+            asr_engine = "faster_whisper"
+        elif model.startswith("whisper"):
+            # Проверяем доступность faster-whisper
+            try:
+                from faster_whisper import WhisperModel
+                # Если faster-whisper доступен, используем его для whisper моделей
+                asr_engine = "faster_whisper"
+            except ImportError:
+                asr_engine = "openai_whisper"
+        else:
+            asr_engine = "openai_whisper"
+    
+    # Кэш ключ должен включать движок
     cache_key_parts = [
         file_hash,
+        asr_engine,
         model,
         str(language or ""),
         str(task or ""),
         str(beam_size or ""),
         str(temperature or ""),
-        str(vad_filter),
+        str(vad_filter) if asr_engine == "faster_whisper" else "",
         str(no_speech_threshold or ""),
     ]
     cache_key = "_".join(cache_key_parts)
@@ -248,6 +269,60 @@ def transcribe(
             logging.getLogger("insightaudio.transcriber").error("Vosk error: %s", e, exc_info=True)
             return {"text": f"Ошибка при транскрипции Vosk: {str(e)}", "segments": [], "duration_sec": duration_sec}
     
+    # Вызываем соответствующую функцию в зависимости от движка
+    if asr_engine == "faster_whisper":
+        return transcribe_with_faster_whisper(
+            audio_path=audio_path,
+            model=model,
+            language=language,
+            beam_size=beam_size,
+            temperature=temperature,
+            vad_filter=vad_filter,
+            no_speech_threshold=no_speech_threshold,
+            enable_diarization=enable_diarization,
+            diarization_segments=diarization_segments,
+            duration_sec=duration_sec,
+            cache_key=cache_key,
+            progress_callback=progress_callback,
+        )
+    elif asr_engine == "openai_whisper":
+        return transcribe_with_openai_whisper(
+            audio_path=audio_path,
+            model=model,
+            language=language,
+            beam_size=beam_size,
+            temperature=temperature,
+            no_speech_threshold=no_speech_threshold,
+            enable_diarization=enable_diarization,
+            diarization_segments=diarization_segments,
+            duration_sec=duration_sec,
+            cache_key=cache_key,
+            task=task,
+        )
+    else:
+        return {"text": f"Неизвестный движок ASR: {asr_engine}", "segments": [], "duration_sec": duration_sec}
+
+
+def transcribe_with_openai_whisper(
+    audio_path: str,
+    model: str,
+    language: Optional[str],
+    beam_size: Optional[int],
+    temperature: Optional[float],
+    no_speech_threshold: Optional[float],
+    enable_diarization: bool,
+    diarization_segments: List,
+    duration_sec: float,
+    cache_key: str,
+    task: Optional[str] = None,
+) -> Dict[str, Union[str, List[Dict]]]:
+    """
+    Транскрипция через openai-whisper.
+    vad_filter не поддерживается в openai-whisper.
+    """
+    import logging
+    logger = logging.getLogger("insightaudio.transcriber")
+    
     if not model.startswith("whisper"):
         return {"text": "Транскрипция для данной модели не реализована", "segments": [], "duration_sec": duration_sec}
 
@@ -257,24 +332,19 @@ def transcribe(
         whisper_name = model.replace("whisper", "", 1).lstrip("-") or model
     else:
         whisper_name = model
-    # XDG_CACHE_HOME уже установлен глобально в main.py, поэтому модели будут загружаться из models/.cache/whisper/
+    
     cache_dir = _get_whisper_cache_dir()
     os.makedirs(cache_dir, exist_ok=True)
     
-    # Определяем устройство для загрузки модели (CUDA или CPU)
     device = _get_device()
-    import logging
-    logger = logging.getLogger("insightaudio.transcriber")
-    logger.info("Загрузка модели Whisper '%s' на устройство: %s", whisper_name, device)
+    logger.info("Загрузка модели OpenAI Whisper '%s' на устройство: %s", whisper_name, device)
     
-    # Используем download_root для явного указания пути и device для выбора устройства
     whisper_model = whisper.load_model(whisper_name, download_root=cache_dir, device=device)
     
-    # Формируем параметры для transcribe, исключая vad_filter (не поддерживается Whisper)
+    # Формируем параметры для transcribe
     transcribe_kwargs = {
         "verbose": False,
     }
-    # Добавляем language только если он указан (None означает автоопределение)
     if language is not None:
         transcribe_kwargs["language"] = language
     if temperature is not None:
@@ -285,7 +355,7 @@ def transcribe(
         transcribe_kwargs["task"] = task
     if no_speech_threshold is not None:
         transcribe_kwargs["no_speech_threshold"] = no_speech_threshold
-    # vad_filter не поддерживается в Whisper transcribe(), поэтому не добавляем его
+    # vad_filter не поддерживается в openai-whisper
     
     result = whisper_model.transcribe(audio_path, **transcribe_kwargs)
     segments = [
@@ -296,6 +366,112 @@ def transcribe(
     segments = _assign_speakers_to_segments(segments, diarization_segments, enable_diarization)
     transcript_text = _format_segments(segments)
     transcript_data = {"text": transcript_text, "segments": segments, "duration_sec": duration_sec}
+    _save_transcript_cache(cache_key, transcript_data)
+    return transcript_data
+
+
+def transcribe_with_faster_whisper(
+    audio_path: str,
+    model: str,
+    language: Optional[str],
+    beam_size: Optional[int],
+    temperature: Optional[float],
+    vad_filter: Optional[bool],
+    no_speech_threshold: Optional[float],
+    enable_diarization: bool,
+    diarization_segments: List,
+    duration_sec: float,
+    cache_key: str,
+    progress_callback: Optional[Callable[[int, float], None]] = None,
+) -> Dict[str, Union[str, List[Dict]]]:
+    """
+    Транскрипция через faster-whisper.
+    Поддерживает vad_filter и прогресс через callback.
+    """
+    import logging
+    logger = logging.getLogger("insightaudio.transcriber")
+    
+    try:
+        from faster_whisper import WhisperModel
+    except ImportError:
+        return {"text": "Библиотека faster-whisper не установлена. Установите: pip install faster-whisper", "segments": [], "duration_sec": duration_sec}
+    
+    # Извлекаем имя модели для faster-whisper
+    if model.startswith("faster-whisper-"):
+        whisper_name = model[len("faster-whisper-") :]
+    elif model.startswith("whisper-"):
+        whisper_name = model[len("whisper-") :]
+    elif model.startswith("whisper"):
+        whisper_name = model.replace("whisper", "", 1).lstrip("-") or model
+    else:
+        whisper_name = model
+    
+    # Определяем устройство
+    device = _get_device()
+    compute_type = "float16" if device == "cuda" else "int8"
+    logger.info("Загрузка модели Faster-Whisper '%s' на устройство: %s (compute_type: %s)", whisper_name, device, compute_type)
+    
+    cache_dir = _get_whisper_cache_dir()
+    os.makedirs(cache_dir, exist_ok=True)
+    
+    # Создаем модель faster-whisper
+    whisper_model = WhisperModel(
+        whisper_name,
+        device=device,
+        compute_type=compute_type,
+        download_root=cache_dir,
+    )
+    
+    # Формируем параметры для transcribe
+    transcribe_kwargs = {}
+    if language is not None:
+        transcribe_kwargs["language"] = language
+    if beam_size is not None:
+        transcribe_kwargs["beam_size"] = beam_size
+    if temperature is not None:
+        transcribe_kwargs["temperature"] = temperature
+    if vad_filter is not None:
+        transcribe_kwargs["vad_filter"] = vad_filter
+    if no_speech_threshold is not None:
+        transcribe_kwargs["no_speech_threshold"] = no_speech_threshold
+    
+    # Выполняем транскрипцию с поддержкой прогресса
+    segments = []
+    last_progress_time = 0
+    import time
+    
+    segments_generator, info = whisper_model.transcribe(audio_path, **transcribe_kwargs)
+    
+    # Обрабатываем сегменты с обновлением прогресса
+    for segment in segments_generator:
+        segments.append({
+            "start": segment.start,
+            "end": segment.end,
+            "text": segment.text.strip(),
+        })
+        
+        # Обновляем прогресс каждые ≤2 секунды
+        if progress_callback and duration_sec and duration_sec > 0:
+            current_time = time.time()
+            if current_time - last_progress_time >= 2.0:
+                inner_progress = min(1.0, segment.end / duration_sec)
+                progress_percent = int(inner_progress * 100)
+                try:
+                    progress_callback(progress_percent, segment.end)
+                except Exception as e:
+                    logger.warning("Ошибка в progress_callback: %s", e)
+                last_progress_time = current_time
+    
+    # Форматируем сегменты
+    formatted_segments = [
+        {"start": seg["start"], "end": seg["end"], "text": seg["text"]}
+        for seg in segments
+        if seg["text"]
+    ]
+    
+    formatted_segments = _assign_speakers_to_segments(formatted_segments, diarization_segments, enable_diarization)
+    transcript_text = _format_segments(formatted_segments)
+    transcript_data = {"text": transcript_text, "segments": formatted_segments, "duration_sec": duration_sec}
     _save_transcript_cache(cache_key, transcript_data)
     return transcript_data
 
@@ -463,10 +639,17 @@ def _save_transcript_cache(cache_key: str, data: Dict[str, Union[str, List[Dict]
 
 
 def _assign_speakers_to_segments(segments, speaker_segments, enable_diarization: bool = True):
+    """
+    Назначает спикеров сегментам транскрипции.
+    Если диаризация выключена или недоступна, все сегменты получают "Speaker 1".
+    """
     if not enable_diarization or not speaker_segments:
+        # Если диаризация выключена или нет данных о спикерах - все сегменты от одного спикера
         for seg in segments:
             seg["speaker"] = f"{SPEAKER_PREFIX} 1"
         return segments
+    
+    # Если диаризация включена и есть данные о спикерах - назначаем по времени
     for seg in segments:
         midpoint = (seg.get("start", 0) + seg.get("end", 0)) / 2
         speaker = _find_speaker_for_time(midpoint, speaker_segments)
