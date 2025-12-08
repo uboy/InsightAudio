@@ -27,6 +27,14 @@ services:
       - ./models:/models
       - ./config:/config
       - ./tmp:/tmp
+    # Поддержка GPU (раскомментируйте если нужен GPU)
+    deploy:
+       resources:
+         reservations:
+           devices:
+             - driver: nvidia
+               count: 1
+               capabilities: [gpu]
     depends_on:
       - redis
   redis:

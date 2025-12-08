@@ -1,0 +1,47 @@
+# GPU-enabled Dockerfile для использования CUDA
+# Использование: docker build -f Dockerfile.gpu -t insightaudio:gpu .
+FROM nvidia/cuda:11.8.0-cudnn8-runtime-ubuntu22.04
+
+# Python 3.10
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    python3.10 \
+    python3.10-dev \
+    python3-pip \
+    ffmpeg \
+    git \
+    wget \
+    unzip \
+    build-essential \
+    gcc \
+    g++ \
+    libsndfile1 \
+    tesseract-ocr \
+    && rm -rf /var/lib/apt/lists/* \
+    && ln -s /usr/bin/python3.10 /usr/bin/python
+
+WORKDIR /app
+
+# Copy only requirements first (better layer caching)
+COPY requirements.txt .
+
+# Install Python dependencies
+RUN pip3 install --no-cache-dir --upgrade pip setuptools wheel \
+    && pip3 install --no-cache-dir -r requirements.txt \
+    && pip3 install --no-cache-dir torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cu118
+
+# Workaround for this package
+RUN pip3 install --no-cache-dir --no-build-isolation "nemo-toolkit[asr]==1.23.0"
+
+# Copy application code and default configs
+COPY app/ ./app/
+COPY config/default_settings.json ./config/default_settings.json
+COPY config/prompt_templates.json ./config/prompt_templates.json
+RUN cp ./config/default_settings.json ./config/config.json
+
+# Create directories
+RUN mkdir -p /models /config /tmp
+
+EXPOSE 55667
+
+CMD ["python3", "-m", "uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "55667"]
+

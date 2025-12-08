@@ -198,12 +198,23 @@ def audio_job(self, job_id: str, user_id: str, params: Dict) -> str:
                 if review_model and summary_text:
                     LOGGER.info("Job %s: Starting review with model %s", job_id, review_model)
                     update_job(session, job_id, stage="reviewing", progress=_calc_progress("reviewing"))
-                    review_prompt = (
-                        "Проверь и улучши следующий пересказ. "
-                        "Исправь ошибки, улучши структуру, добавь недостающие детали, если они важны. "
-                        "Сохрани формат Markdown.\n\n"
-                        f"Пересказ:\n{summary_text}"
-                    )
+                    
+                    # Используем промпт из параметров, конфига или стандартный промпт для ревью
+                    from app import config_manager
+                    cfg = config_manager.get_config()
+                    review_prompt_template = params.get("review_prompt") or cfg.get("REVIEW_PROMPT", 
+                        "Проверь и улучши следующий пересказ. Исправь ошибки, улучши структуру, добавь недостающие детали, если они важны. Сохрани формат Markdown.\n\nПересказ:\n")
+                    
+                    # Если промпт не содержит текст пересказа, добавляем его
+                    if "{summary}" in review_prompt_template:
+                        review_prompt = review_prompt_template.format(summary=summary_text)
+                    elif "Пересказ:" in review_prompt_template or "пересказ:" in review_prompt_template.lower():
+                        # Если уже есть метка "Пересказ:", добавляем текст после неё
+                        review_prompt = review_prompt_template + summary_text
+                    else:
+                        # Если метки нет, добавляем её и текст
+                        review_prompt = review_prompt_template + "\n\nПересказ:\n" + summary_text
+                    
                     review_text = summarizer.summarize(
                         summary_text,
                         model=review_model,

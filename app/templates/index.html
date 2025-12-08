@@ -106,6 +106,9 @@
 
                 <div class="models-section">
                     <label><input type="checkbox" id="enable_summary" checked> Сделать пересказ (summary)</label>
+                </div>
+
+                <div id="summary_blocks" class="models-section">
                     <label for="summary_backend_selector">Источник моделей пересказа:</label>
                     <select id="summary_backend_selector">
                         <option value="ollama">Ollama ({{config.OLLAMA_API_BASE}})</option>
@@ -129,7 +132,7 @@
                     </div>
                 </div>
 
-                <div class="models-section">
+                <div id="summary_model_block" class="models-section">
                     <label for="summarize_model">Модель пересказа (summary):</label>
                     <div style="display: flex; gap: 10px; align-items: center;">
                         <select name="summarize_model" id="summarize_model" required style="flex: 1;">
@@ -154,7 +157,7 @@
                     <div class="small" id="summary_metrics_hint">Нет данных о производительности выбранной модели.</div>
                 </div>
 
-                <div class="models-section">
+                <div id="review_model_block" class="models-section">
                     <label for="review_model">Модель для ревью пересказа (опционально):</label>
                     <div style="display: flex; gap: 10px; align-items: center;">
                         <select name="review_model" id="review_model" style="flex: 1;">
@@ -180,7 +183,20 @@
                     <div class="small">Модель для проверки и улучшения пересказа после его генерации.</div>
                 </div>
 
-                <div class="models-section">
+                <div id="review_prompt_block" class="models-section" style="display:none;">
+                    <label for="review_prompt_template">Шаблон промпта для ревью:</label>
+                    <select id="review_prompt_template">
+                        <option value="">— использовать стандартный —</option>
+                        {% for tpl in config.PROMPT_TEMPLATES %}
+                        <option value="{{ tpl.id }}" data-text="{{ tpl.prompt_text|e }}">{{ tpl.title }} — {{ tpl.description }}</option>
+                        {% endfor %}
+                    </select>
+                    <label for="review_custom_prompt">Промпт для ревью пересказа:</label>
+                    <textarea id="review_custom_prompt" rows="5" placeholder="Промпт для проверки и улучшения пересказа"></textarea>
+                    <div class="small">Если не указан, будет использован стандартный промпт из конфигурации.</div>
+                </div>
+
+                <div id="prompt_template_block" class="models-section">
                     <label for="prompt_template">Шаблон промпта:</label>
                     <select id="prompt_template">
                         <option value="">— выберите —</option>
@@ -606,7 +622,10 @@
     function applyBackendState(){
         const backend = summaryBackendSelect.value;
         summaryBackendSelect.value = backend;
-        customApiBlock.style.display = backend === "custom_api" ? "block" : "none";
+        const isSummaryEnabled = enableSummaryCheckbox ? enableSummaryCheckbox.checked : false;
+        if (customApiBlock) {
+            customApiBlock.style.display = (backend === "custom_api" && isSummaryEnabled) ? "block" : "none";
+        }
         localStorage.setItem(STORAGE_KEYS.backend, backend);
         loadModelOptions();
     }
@@ -776,6 +795,14 @@
         }
         updateLLMMetricLabels();
         setTimeout(loadModelOptions, 100);
+        
+        // Автоматически проверяем подключение к custom API при загрузке страницы, если URL сохранен
+        if(summaryBackendSelect && summaryBackendSelect.value === "custom_api" && customApiUrlInput && customApiUrlInput.value.trim()){
+            setTimeout(() => checkCustomApi('summarize'), 200);
+        }
+        if(translateBackendSelect && translateBackendSelect.value === "custom_api" && translateCustomApiUrlInput && translateCustomApiUrlInput.value.trim()){
+            setTimeout(() => checkCustomApi('translate'), 300);
+        }
     }
 
     summaryBackendSelect.addEventListener("change", applyBackendState);
@@ -892,6 +919,61 @@
             }
         });
     }
+    
+    // Обработчик для скрытия/показа блоков пересказа
+    function toggleSummaryBlocks() {
+        const isEnabled = enableSummaryCheckbox ? enableSummaryCheckbox.checked : false;
+        const summaryBlocks = document.getElementById("summary_blocks");
+        const customApiBlock = document.getElementById("custom_api_block");
+        const summaryModelBlock = document.getElementById("summary_model_block");
+        const reviewModelBlock = document.getElementById("review_model_block");
+        const reviewPromptBlock = document.getElementById("review_prompt_block");
+        const promptTemplateBlock = document.getElementById("prompt_template_block");
+        
+        if (summaryBlocks) summaryBlocks.style.display = isEnabled ? "block" : "none";
+        if (customApiBlock) {
+            const summaryBackendSelect = document.getElementById("summary_backend_selector");
+            customApiBlock.style.display = isEnabled && summaryBackendSelect && summaryBackendSelect.value === "custom_api" ? "block" : "none";
+        }
+        if (summaryModelBlock) summaryModelBlock.style.display = isEnabled ? "block" : "none";
+        if (reviewModelBlock) reviewModelBlock.style.display = isEnabled ? "block" : "none";
+        // Блок промпта ревью показываем только если выбрана модель ревью
+        if (reviewPromptBlock) {
+            const reviewModel = document.getElementById("review_model");
+            reviewPromptBlock.style.display = isEnabled && reviewModel && reviewModel.value ? "block" : "none";
+        }
+        if (promptTemplateBlock) promptTemplateBlock.style.display = isEnabled ? "block" : "none";
+    }
+    
+    if (enableSummaryCheckbox) {
+        enableSummaryCheckbox.addEventListener("change", toggleSummaryBlocks);
+        // Вызываем при загрузке страницы
+        setTimeout(toggleSummaryBlocks, 100);
+    }
+    
+    // Обработчик для показа блока промпта ревью при выборе модели
+    const reviewModelSelect = document.getElementById("review_model");
+    const reviewPromptBlock = document.getElementById("review_prompt_block");
+    const reviewPromptTemplateSelect = document.getElementById("review_prompt_template");
+    const reviewCustomPromptTextarea = document.getElementById("review_custom_prompt");
+    
+    if (reviewModelSelect && reviewPromptBlock) {
+        reviewModelSelect.addEventListener("change", () => {
+            const hasReviewModel = reviewModelSelect.value && enableSummaryCheckbox && enableSummaryCheckbox.checked;
+            reviewPromptBlock.style.display = hasReviewModel ? "block" : "none";
+        });
+    }
+    
+    // Обработчик для шаблона промпта ревью
+    if (reviewPromptTemplateSelect && reviewCustomPromptTextarea) {
+        reviewPromptTemplateSelect.addEventListener("change", () => {
+            const selected = reviewPromptTemplateSelect.options[reviewPromptTemplateSelect.selectedIndex];
+            const text = selected ? selected.getAttribute("data-text") : "";
+            if (text) {
+                reviewCustomPromptTextarea.value = text;
+            }
+        });
+    }
 
     function makeJobCard(job){
         const statusColor = job.status === 'success' ? '#0a0' : job.status === 'failed' ? '#c00' : '#0059b2';
@@ -965,6 +1047,7 @@
             summary_backend: document.getElementById('summary_backend_selector').value,
             summary_custom_api_url: document.getElementById('custom_api_url').value || undefined,
             review_model: document.getElementById('review_model')?.value || undefined,
+            review_prompt: document.getElementById('review_custom_prompt')?.value || undefined,
             prompt_template_id: document.getElementById('prompt_template').value || undefined,
             custom_prompt: document.getElementById('custom_prompt').value || undefined,
             enable_translation: enableTranslationCheckbox.checked,

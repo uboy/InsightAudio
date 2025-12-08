@@ -149,15 +149,69 @@ def _summarize_via_custom_api(
 ) -> str:
     if not api_url:
         raise RuntimeError("Не указан URL пользовательского API summary")
-    payload = {
-        "model": model,
-        "prompt": prompt,
-        "text": text,
-        "input": text,
-    }
-    LOGGER.debug("Custom summary API POST %s", api_url)
-    response = requests.post(api_url, json=payload, headers=headers or {}, timeout=120)
-    response.raise_for_status()
+    
+    # Определяем endpoint для запроса
+    api_url_clean = api_url.rstrip('/')
+    
+    # Если URL похож на Ollama (порт 11434), используем стандартный endpoint Ollama
+    if ':11434' in api_url_clean or 'ollama' in api_url_clean.lower():
+        endpoint = f"{api_url_clean}/api/generate"
+        payload = {
+            "model": model,
+            "prompt": f"{prompt}\n\n{text}",
+            "stream": False,
+        }
+    else:
+        # Для других API пробуем разные варианты endpoints
+        endpoint = api_url_clean
+        # Пробуем добавить стандартные пути если их нет
+        if not any(path in endpoint for path in ['/api/', '/generate', '/completion', '/chat']):
+            # Пробуем стандартные endpoints
+            possible_endpoints = [
+                f"{api_url_clean}/api/generate",
+                f"{api_url_clean}/api/completion",
+                f"{api_url_clean}/generate",
+                f"{api_url_clean}/completion",
+                f"{api_url_clean}/api/chat/completions",
+            ]
+            # Используем первый endpoint, но сначала попробуем определить правильный
+            endpoint = possible_endpoints[0]
+        
+        payload = {
+            "model": model,
+            "prompt": prompt,
+            "text": text,
+            "input": text,
+            "message": f"{prompt}\n\n{text}",
+        }
+    
+    LOGGER.debug("Custom summary API POST %s with payload keys: %s", endpoint, list(payload.keys()))
+    try:
+        response = requests.post(endpoint, json=payload, headers=headers or {}, timeout=120)
+        response.raise_for_status()
+    except requests.exceptions.HTTPError as e:
+        if e.response.status_code == 405:
+            # Если метод не разрешен, пробуем другие endpoints
+            LOGGER.warning("405 Method Not Allowed для %s, пробуем альтернативные endpoints", endpoint)
+            for alt_endpoint in [
+                f"{api_url_clean}/api/generate",
+                f"{api_url_clean}/api/completion",
+                f"{api_url_clean}/generate",
+                f"{api_url_clean}/completion",
+            ]:
+                if alt_endpoint != endpoint:
+                    try:
+                        LOGGER.debug("Пробуем альтернативный endpoint: %s", alt_endpoint)
+                        response = requests.post(alt_endpoint, json=payload, headers=headers or {}, timeout=120)
+                        response.raise_for_status()
+                        endpoint = alt_endpoint
+                        break
+                    except Exception:
+                        continue
+            else:
+                raise
+        else:
+            raise
     try:
         data = response.json()
     except ValueError:

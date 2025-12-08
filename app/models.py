@@ -11,6 +11,82 @@ from app import config_manager, model_metrics, settings_loader
 
 LOGGER = logging.getLogger("insightaudio.models")
 
+
+def _get_whisper_device() -> str:
+    """
+    Определяет устройство для Whisper (CUDA или CPU).
+    Проверяет доступность CUDA и настройки конфигурации.
+    """
+    config = config_manager.get_config()
+    use_cuda = config.get("USE_CUDA", True)
+    LOGGER.info("USE_CUDA из конфига: %s", use_cuda)
+    
+    if not use_cuda:
+        LOGGER.info("USE_CUDA отключен в конфиге, используется CPU")
+        return "cpu"
+    
+    try:
+        import torch
+        LOGGER.info("PyTorch версия: %s", torch.__version__)
+        LOGGER.info("PyTorch собран с CUDA: %s", torch.version.cuda if hasattr(torch.version, 'cuda') else "неизвестно")
+        
+        # Проверяем доступность CUDA
+        cuda_available = torch.cuda.is_available()
+        LOGGER.info("torch.cuda.is_available(): %s", cuda_available)
+        
+        if cuda_available:
+            device_count = torch.cuda.device_count()
+            LOGGER.info("Количество CUDA устройств: %d", device_count)
+            if device_count > 0:
+                device_name = torch.cuda.get_device_name(0)
+                device_capability = torch.cuda.get_device_capability(0)
+                LOGGER.info("CUDA устройство #0: %s (Compute Capability: %s.%s)", 
+                           device_name, device_capability[0], device_capability[1])
+                LOGGER.info("CUDA доступна, используется GPU")
+                return "cuda"
+            else:
+                LOGGER.warning("CUDA доступна, но устройств не найдено, используется CPU")
+                return "cpu"
+        else:
+            # Дополнительная диагностика
+            LOGGER.info("CUDA недоступна, проверяем причины...")
+            try:
+                # Проверяем переменные окружения
+                import os
+                cuda_visible_devices = os.environ.get("CUDA_VISIBLE_DEVICES")
+                if cuda_visible_devices is not None:
+                    LOGGER.info("CUDA_VISIBLE_DEVICES: %s", cuda_visible_devices)
+                else:
+                    LOGGER.info("CUDA_VISIBLE_DEVICES не установлена")
+                
+                # Проверяем наличие CUDA библиотек
+                try:
+                    import subprocess
+                    result = subprocess.run(["nvidia-smi"], capture_output=True, text=True, timeout=5)
+                    if result.returncode == 0:
+                        LOGGER.info("nvidia-smi доступен, но PyTorch не видит CUDA")
+                        LOGGER.info("Возможные причины: PyTorch собран без CUDA поддержки или версия CUDA не совместима")
+                        LOGGER.info("nvidia-smi вывод (первые 5 строк):\n%s", "\n".join(result.stdout.split("\n")[:5]))
+                    else:
+                        LOGGER.info("nvidia-smi недоступен или вернул ошибку: %s", result.stderr[:200])
+                except FileNotFoundError:
+                    LOGGER.info("nvidia-smi не найден в PATH")
+                except Exception as e:
+                    LOGGER.debug("Ошибка при проверке nvidia-smi: %s", e)
+            except Exception as diag_e:
+                LOGGER.debug("Ошибка при диагностике CUDA: %s", diag_e)
+            
+            LOGGER.info("Используется CPU")
+            return "cpu"
+    except ImportError:
+        LOGGER.warning("PyTorch не установлен, используется CPU")
+        return "cpu"
+    except Exception as e:
+        LOGGER.error("Ошибка при проверке CUDA: %s", e, exc_info=True)
+        LOGGER.warning("Используется CPU из-за ошибки")
+        return "cpu"
+
+
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 CONFIG_DIR = os.path.abspath(os.path.join(BASE_DIR, "..", "config"))
 MODELS_JSON = os.path.join(CONFIG_DIR, "supported_models.json")
@@ -429,8 +505,12 @@ def download_model(model_name, model_type, backend: Optional[str] = None):
                     except Exception as e:
                         LOGGER.warning("Не удалось установить torch.hub каталог: %s", e)
                     
-                    # Загружаем модель с явным указанием download_root
-                    model = whisper.load_model(whisper_model_name, download_root=cache_dir)
+                    # Определяем устройство для загрузки модели (CUDA или CPU)
+                    device = _get_whisper_device()
+                    LOGGER.info("Загрузка модели Whisper '%s' на устройство: %s", whisper_model_name, device)
+                    
+                    # Загружаем модель с явным указанием download_root и device
+                    model = whisper.load_model(whisper_model_name, download_root=cache_dir, device=device)
                     LOGGER.info("whisper.load_model() завершен для '%s'", whisper_model_name)
                 finally:
                     # Восстанавливаем переменные окружения

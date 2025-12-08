@@ -12,8 +12,85 @@ from app import config_manager, diarizer
 from app.models import _get_whisper_cache_dir
 
 
-CACHE_TTL = timedelta(days=1)
+CACHE_TTL = timedelta(days=7)
 SPEAKER_PREFIX = "Speaker"
+
+
+def _get_device() -> str:
+    """
+    Определяет устройство для Whisper (CUDA или CPU).
+    Проверяет доступность CUDA и настройки конфигурации.
+    """
+    import logging
+    logger = logging.getLogger("insightaudio.transcriber")
+    
+    config = config_manager.get_config()
+    use_cuda = config.get("USE_CUDA", True)
+    logger.info("USE_CUDA из конфига: %s", use_cuda)
+    
+    if not use_cuda:
+        logger.info("USE_CUDA отключен в конфиге, используется CPU")
+        return "cpu"
+    
+    try:
+        import torch
+        logger.info("PyTorch версия: %s", torch.__version__)
+        logger.info("PyTorch собран с CUDA: %s", torch.version.cuda if hasattr(torch.version, 'cuda') else "неизвестно")
+        
+        # Проверяем доступность CUDA
+        cuda_available = torch.cuda.is_available()
+        logger.info("torch.cuda.is_available(): %s", cuda_available)
+        
+        if cuda_available:
+            device_count = torch.cuda.device_count()
+            logger.info("Количество CUDA устройств: %d", device_count)
+            if device_count > 0:
+                device_name = torch.cuda.get_device_name(0)
+                device_capability = torch.cuda.get_device_capability(0)
+                logger.info("CUDA устройство #0: %s (Compute Capability: %s.%s)", 
+                           device_name, device_capability[0], device_capability[1])
+                logger.info("CUDA доступна, используется GPU")
+                return "cuda"
+            else:
+                logger.warning("CUDA доступна, но устройств не найдено, используется CPU")
+                return "cpu"
+        else:
+            # Дополнительная диагностика
+            logger.info("CUDA недоступна, проверяем причины...")
+            try:
+                # Проверяем переменные окружения
+                import os
+                cuda_visible_devices = os.environ.get("CUDA_VISIBLE_DEVICES")
+                if cuda_visible_devices is not None:
+                    logger.info("CUDA_VISIBLE_DEVICES: %s", cuda_visible_devices)
+                else:
+                    logger.info("CUDA_VISIBLE_DEVICES не установлена")
+                
+                # Проверяем наличие CUDA библиотек
+                try:
+                    import subprocess
+                    result = subprocess.run(["nvidia-smi"], capture_output=True, text=True, timeout=5)
+                    if result.returncode == 0:
+                        logger.info("nvidia-smi доступен, но PyTorch не видит CUDA")
+                        logger.info("Возможные причины: PyTorch собран без CUDA поддержки или версия CUDA не совместима")
+                    else:
+                        logger.info("nvidia-smi недоступен или вернул ошибку")
+                except FileNotFoundError:
+                    logger.info("nvidia-smi не найден в PATH")
+                except Exception as e:
+                    logger.debug("Ошибка при проверке nvidia-smi: %s", e)
+            except Exception as diag_e:
+                logger.debug("Ошибка при диагностике CUDA: %s", diag_e)
+            
+            logger.info("Используется CPU")
+            return "cpu"
+    except ImportError:
+        logger.warning("PyTorch не установлен, используется CPU")
+        return "cpu"
+    except Exception as e:
+        logger.error("Ошибка при проверке CUDA: %s", e, exc_info=True)
+        logger.warning("Используется CPU из-за ошибки")
+        return "cpu"
 
 
 def transcribe(
@@ -183,8 +260,15 @@ def transcribe(
     # XDG_CACHE_HOME уже установлен глобально в main.py, поэтому модели будут загружаться из models/.cache/whisper/
     cache_dir = _get_whisper_cache_dir()
     os.makedirs(cache_dir, exist_ok=True)
-    # Используем download_root для явного указания пути
-    whisper_model = whisper.load_model(whisper_name, download_root=cache_dir)
+    
+    # Определяем устройство для загрузки модели (CUDA или CPU)
+    device = _get_device()
+    import logging
+    logger = logging.getLogger("insightaudio.transcriber")
+    logger.info("Загрузка модели Whisper '%s' на устройство: %s", whisper_name, device)
+    
+    # Используем download_root для явного указания пути и device для выбора устройства
+    whisper_model = whisper.load_model(whisper_name, download_root=cache_dir, device=device)
     
     # Формируем параметры для transcribe, исключая vad_filter (не поддерживается Whisper)
     transcribe_kwargs = {
@@ -407,18 +491,26 @@ def _format_segments(segments):
         if not buffer:
             return
         text = " ".join(buffer).strip()
+        if not text:  # Пропускаем пустые буферы
+            return
         timestamp = _format_timestamp(start_time if start_time is not None else 0)
         lines.append(f"[{timestamp}] {current_speaker}: {text}")
 
     for seg in segments:
-        speaker = seg.get("speaker") or f"{SPEAKER_PREFIX}"
+        speaker = seg.get("speaker") or f"{SPEAKER_PREFIX} 1"
+        text = seg.get("text", "").strip()
+        if not text:  # Пропускаем пустые сегменты
+            continue
         if speaker != current_speaker:
-            flush()
+            flush()  # Сохраняем предыдущий буфер перед сменой спикера
             buffer = []
             current_speaker = speaker
             start_time = seg.get("start", 0)
-        buffer.append(seg.get("text", "").strip())
-    flush()
+        buffer.append(text)
+    
+    # Финальный flush только если есть что сохранить
+    if buffer:
+        flush()
     return "\n".join(lines).strip()
 
 
