@@ -3,6 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <title>InsightAudio — загрузка и транскрибация</title>
+    <link rel="icon" type="image/x-icon" href="{{ url_for('static', path='favicon.ico') }}">
     <style>
         body { font-family: Arial, sans-serif; margin: 40px; background: #f4f6f8; color: #333; }
         .container { max-width: 700px; margin: auto; background: #fff; padding: 32px 40px; border-radius: 12px; box-shadow: 0 2px 10px #aaa2; }
@@ -16,90 +17,288 @@
         .status.notdownloaded { color: #a00; }
         .small { font-size: 12px; color: #555; }
         #progress-bar { width: 100%; background: #eee; height: 8px; border-radius: 4px; margin: 12px 0; display:none;}
-        #progress-value { background: #0059b2; height: 8px; border-radius: 4px; width:0%;}
-        .notify { padding: 10px; border-radius:5px; color: #fff; background: #38a; margin:10px 0; display:none;}
+        #progress-value { background: #0059b2; height: 8px; border-radius: 4px; width:0%; transition: width 0.3s;}
+        .progress-info { font-size: 12px; color: #666; margin-top: 4px; display: none;}
+        .progress-info.active { display: block;}
+        .notify { padding: 10px; border-radius:5px; color: #fff; background: #38a; margin:10px 0; display:none; position: relative;}
         .notify.error { background: #c00; }
-        .download-btn { background: #e09000; color: #fff; padding: 6px 16px; border-radius: 6px; font-size: 13px; margin:0 10px;}
+        .notify .copy-btn { position: absolute; right: 30px; top: 50%; transform: translateY(-50%); background: rgba(255,255,255,0.3); border: none; color: #fff; padding: 4px 8px; border-radius: 3px; cursor: pointer; font-size: 11px; z-index: 10;}
+        .notify .copy-btn:hover { background: rgba(255,255,255,0.5); }
+        .notify .close-btn { position: absolute; right: 10px; top: 50%; transform: translateY(-50%); background: rgba(255,255,255,0.3); border: none; color: #fff; padding: 4px 8px; border-radius: 3px; cursor: pointer; font-size: 11px; z-index: 10;}
+        .notify .close-btn:hover { background: rgba(255,255,255,0.5); }
+        .download-btn { background: #e09000; color: #fff; padding: 6px 16px; border-radius: 6px; font-size: 13px; margin:0 10px; cursor: pointer;}
+        .download-btn:disabled { background: #aaa; cursor: not-allowed; }
     </style>
 </head>
 <body>
     <div class="container">
         <h1>InsightAudio</h1>
-        <h2>Загрузить аудио или видео</h2>
+        <div class="tabs">
+            <button class="tab-btn active" data-tab="audioTab" onclick="switchTab('audioTab')">Audio</button>
+            <button class="tab-btn" data-tab="docTab" onclick="switchTab('docTab')">Documents</button>
+            <button class="tab-btn" data-tab="jobsTab" onclick="switchTab('jobsTab')">My Jobs</button>
+        </div>
+
         <div class="notify" id="notify"></div>
-        <form method="post" enctype="multipart/form-data" action="/process" id="processForm">
-            <label for="file">Файл (аудио/видео):</label>
-            <input type="file" name="file" id="file" required accept="audio/*,video/*">
 
-            <div class="models-section">
-                <label for="transcribe_model">Модель транскрипции:</label>
-                <select name="transcribe_model" id="transcribe_model" required>
-                    {% for model in model_options.transcribe %}
-                        <option value="{{model.name}}">
-                            {{model.display_name}}
-                            {% if model.downloaded %}
-                                (скачано)
-                            {% else %}
-                                (требуется скачать)
-                            {% endif %}
-                        </option>
-                    {% endfor %}
-                </select>
-                <div id="transcribe_downloads">
-                    {% for model in model_options.transcribe %}
-                        {% if not model.downloaded %}
-                            <button class="download-btn" type="button" onclick="downloadModel('{{model.name}}', 'transcribe')">Скачать {{model.display_name}}</button>
-                        {% endif %}
-                    {% endfor %}
+        <section id="audioTab" class="tab-section">
+            <h2>Загрузить аудио или видео</h2>
+            <form id="processForm">
+                <label for="file">Файл (аудио/видео):</label>
+                <input type="file" name="file" id="file" required accept="audio/*,video/*">
+
+                <div class="models-section">
+                    <label for="transcribe_model">Модель транскрипции:</label>
+                    <div style="display: flex; gap: 10px; align-items: center;">
+                        <select name="transcribe_model" id="transcribe_model" required style="flex: 1;">
+                        {% for model in model_options.transcribe %}
+                                <option value="{{model.name}}" data-downloaded="{{model.downloaded}}">
+                                {{model.display_name}}
+                                {% if model.downloaded %}
+                                    (скачано)
+                                {% else %}
+                                    (требуется скачать)
+                                {% endif %}
+                            </option>
+                        {% endfor %}
+                    </select>
+                        <button class="download-btn" type="button" id="transcribe_download_btn" style="display: none;" onclick="downloadSelectedModel('transcribe')">Скачать</button>
+                    </div>
                 </div>
-            </div>
 
-            <div class="models-section">
-                <label for="summary_backend_selector">Источник моделей пересказа:</label>
-                <select id="summary_backend_selector">
-                    <option value="ollama">Ollama (локальный сервер)</option>
-                    <option value="llama_cpp">llama.cpp</option>
-                    <option value="custom_api">Пользовательское API</option>
-                </select>
-                <div class="small">Настройка сохраняется в вашем браузере и влияет на список моделей пересказа.</div>
-            </div>
-
-            <div class="models-section" id="custom_api_block" style="display:none;">
-                <label for="custom_api_url">URL пользовательского API:</label>
-                <input type="text" id="custom_api_url" placeholder="https://example.com/summary-endpoint">
-                <label for="custom_api_models">Список моделей (через запятую):</label>
-                <input type="text" id="custom_api_models" placeholder="my-model,my-other-model">
-                <div class="small">Модели будут отображаться только в интерфейсе и передаваться в API вместе с текстом.</div>
-            </div>
-
-            <div class="models-section">
-                <label for="summarize_model">Модель пересказа (summary):</label>
-                <select name="summarize_model" id="summarize_model" required>
-                    {% for model in model_options.summarize %}
-                        <option value="{{model.name}}">
-                            {{model.display_name}}
-                            {% if model.downloaded %}
-                                (скачано)
-                            {% else %}
-                                (требуется скачать)
-                            {% endif %}
-                        </option>
-                    {% endfor %}
-                </select>
-                <div id="summarize_downloads">
-                    {% for model in model_options.summarize %}
-                        {% if not model.downloaded %}
-                            <button class="download-btn" type="button" onclick="downloadModel('{{model.name}}', 'summarize')">Скачать {{model.display_name}}</button>
-                        {% endif %}
-                    {% endfor %}
+                <div class="models-section">
+                    <label for="audio_language">Язык распознавания:</label>
+                    <select id="audio_language">
+                        <option value="auto">Авто</option>
+                        <option value="ru">Русский</option>
+                        <option value="en">English</option>
+                        <option value="de">Deutsch</option>
+                        <option value="es">Español</option>
+                        <option value="fr">Français</option>
+                        <option value="it">Italiano</option>
+                    </select>
+                    <label for="preset">Пресет качества:</label>
+                    <select id="preset">
+                        <option value="quality">Quality (beam=5, vad, loudnorm)</option>
+                        <option value="balanced" selected>Balanced (beam=3, vad, loudnorm)</option>
+                        <option value="fast">Fast (beam=1, vad, no loudnorm)</option>
+                    </select>
+                    <label><input type="checkbox" id="enable_diarization" checked> Диаризация</label>
                 </div>
-            </div>
-            <input type="hidden" name="summary_backend" id="summary_backend_field" value="{{config.SUMMARY_BACKEND}}">
-            <input type="hidden" name="custom_api_url" id="custom_api_url_field">
-            <input type="hidden" name="custom_api_models" id="custom_api_models_field">
-            <div id="progress-bar"><div id="progress-value"></div></div>
-            <button type="submit" id="processBtn">Обработать</button>
-        </form>
+
+                <div class="models-section">
+                    <details>
+                        <summary>Advanced ASR</summary>
+                        <label for="beam_size">beam_size</label>
+                        <input type="number" id="beam_size" min="1" max="10" step="1" placeholder="auto">
+                        <label for="temperature">temperature</label>
+                        <input type="number" id="temperature" min="0" max="1" step="0.1" placeholder="auto">
+                        <label for="vad_filter">VAD filter</label>
+                        <select id="vad_filter">
+                            <option value="">auto</option>
+                            <option value="true">on</option>
+                            <option value="false">off</option>
+                        </select>
+                        <label for="no_speech_threshold">no_speech_threshold</label>
+                        <input type="number" id="no_speech_threshold" min="0" max="1" step="0.05" placeholder="auto">
+                    </details>
+                </div>
+
+                <div class="models-section">
+                    <label><input type="checkbox" id="enable_summary" checked> Сделать пересказ (summary)</label>
+                    <label for="summary_backend_selector">Источник моделей пересказа:</label>
+                    <select id="summary_backend_selector">
+                        <option value="ollama">Ollama ({{config.OLLAMA_API_BASE}})</option>
+                        <option value="llama_cpp">llama.cpp</option>
+                        <option value="custom_api">Пользовательское API</option>
+                    </select>
+                    <div class="small">Настройка сохраняется в вашем браузере и влияет на список моделей пересказа.</div>
+                </div>
+
+                <div class="models-section" id="custom_api_block" style="display:none;">
+                    <label for="custom_api_url">URL пользовательского API:</label>
+                    <div style="display: flex; gap: 10px; align-items: center;">
+                        <input type="text" id="custom_api_url" placeholder="https://example.com/summary-endpoint" style="flex: 1;">
+                        <button type="button" id="check_custom_api_btn" class="btn" onclick="checkCustomApi('summarize')">Проверить подключение</button>
+                    </div>
+                    <div class="small" id="custom_api_status"></div>
+                    <div id="custom_api_manual_models" style="display:none; margin-top: 10px;">
+                        <label for="custom_api_models_manual">Список моделей (через запятую):</label>
+                        <input type="text" id="custom_api_models_manual" placeholder="model1,model2,model3" style="width: 100%;">
+                        <div class="small">Укажите модели вручную, если автоматическое получение не удалось</div>
+                    </div>
+                </div>
+
+                <div class="models-section">
+                    <label for="summarize_model">Модель пересказа (summary):</label>
+                    <div style="display: flex; gap: 10px; align-items: center;">
+                        <select name="summarize_model" id="summarize_model" required style="flex: 1;">
+                        {% for model in model_options.summarize %}
+                                <option value="{{model.name}}" data-downloaded="{{model.downloaded}}"
+                                    {% if model.metrics %}data-metrics='{{ model.metrics | tojson | safe }}'{% endif %}
+                                    {% if model.metrics_summary %}data-metrics-summary="{{ model.metrics_summary }}"{% endif %}>
+                                {{model.display_name}}
+                                {% if model.downloaded %}
+                                    (скачано)
+                                {% else %}
+                                    (требуется скачать)
+                                {% endif %}
+                                    {% if model.metrics_summary %}
+                                        — {{ model.metrics_summary }}
+                                {% endif %}
+                            </option>
+                        {% endfor %}
+                    </select>
+                        <button class="download-btn" type="button" id="summarize_download_btn" style="display: none;" onclick="downloadSelectedModel('summarize')">Скачать</button>
+                    </div>
+                    <div class="small" id="summary_metrics_hint">Нет данных о производительности выбранной модели.</div>
+                </div>
+
+                <div class="models-section">
+                    <label for="review_model">Модель для ревью пересказа (опционально):</label>
+                    <div style="display: flex; gap: 10px; align-items: center;">
+                        <select name="review_model" id="review_model" style="flex: 1;">
+                            <option value="">— не использовать —</option>
+                        {% for model in model_options.summarize %}
+                                <option value="{{model.name}}" data-downloaded="{{model.downloaded}}"
+                                    {% if model.metrics %}data-metrics='{{ model.metrics | tojson | safe }}'{% endif %}
+                                    {% if model.metrics_summary %}data-metrics-summary="{{ model.metrics_summary }}"{% endif %}>
+                                {{model.display_name}}
+                                {% if model.downloaded %}
+                                    (скачано)
+                                {% else %}
+                                    (требуется скачать)
+                                {% endif %}
+                                    {% if model.metrics_summary %}
+                                        — {{ model.metrics_summary }}
+                                {% endif %}
+                            </option>
+                        {% endfor %}
+                    </select>
+                        <button class="download-btn" type="button" id="review_download_btn" style="display: none;" onclick="downloadSelectedModel('review')">Скачать</button>
+                    </div>
+                    <div class="small">Модель для проверки и улучшения пересказа после его генерации.</div>
+                </div>
+
+                <div class="models-section">
+                    <label for="prompt_template">Шаблон промпта:</label>
+                    <select id="prompt_template">
+                        <option value="">— выберите —</option>
+                        {% for tpl in config.PROMPT_TEMPLATES %}
+                        <option value="{{ tpl.id }}" data-text="{{ tpl.prompt_text|e }}">{{ tpl.title }} — {{ tpl.description }}</option>
+                        {% endfor %}
+                    </select>
+                    <label for="custom_prompt">Промпт для текущего запуска:</label>
+                    <textarea id="custom_prompt" rows="5" placeholder="Настройте текст промпта"></textarea>
+                </div>
+
+                <div class="models-section">
+                    <label><input type="checkbox" id="enable_translation"> Перевести результат</label>
+                    <label for="target_language_audio">Целевой язык:</label>
+                    <select id="target_language_audio">
+                        <option value="ru">Русский</option>
+                        <option value="en">English</option>
+                        <option value="de">Deutsch</option>
+                        <option value="es">Español</option>
+                    </select>
+                </div>
+
+                <div id="progress-bar"><div id="progress-value"></div></div>
+                <div class="progress-info" id="progress-info"></div>
+                <button type="submit" id="processBtn">Отправить в очередь</button>
+            </form>
+            <div id="audioJobStatus" class="job-status"></div>
+        </section>
+
+        <section id="docTab" class="tab-section" style="display:none;">
+            <h2>Перевод документов</h2>
+            <form id="translateForm">
+                <label for="doc_file">Документ (DOCX, PPTX, XLSX, PDF):</label>
+                <input type="file" name="file" id="doc_file" required accept=".docx,.pptx,.xlsx,.pdf">
+
+                <label for="target_language">Язык перевода:</label>
+                <select name="target_language" id="target_language">
+                    <option value="ru">Русский</option>
+                    <option value="en">English</option>
+                    <option value="de">Deutsch</option>
+                    <option value="es">Español</option>
+                </select>
+
+                <div class="models-section">
+                    <label for="translate_backend_selector">Источник моделей перевода:</label>
+                    <select id="translate_backend_selector">
+                        <option value="ollama">Ollama ({{config.OLLAMA_API_BASE}})</option>
+                        <option value="llama_cpp">llama.cpp</option>
+                        <option value="custom_api">Пользовательское API</option>
+                    </select>
+                    <div class="small">Настройка сохраняется в вашем браузере и влияет на список моделей перевода.</div>
+                </div>
+
+                <div class="models-section" id="translate_custom_api_block" style="display:none;">
+                    <label for="translate_custom_api_url">URL пользовательского API:</label>
+                    <div style="display: flex; gap: 10px; align-items: center;">
+                        <input type="text" id="translate_custom_api_url" placeholder="https://example.com/translate-endpoint" style="flex: 1;">
+                        <button type="button" id="check_translate_custom_api_btn" class="btn" onclick="checkCustomApi('translate')">Проверить подключение</button>
+                    </div>
+                    <div class="small" id="translate_custom_api_status"></div>
+                    <div id="translate_custom_api_manual_models" style="display:none; margin-top: 10px;">
+                        <label for="translate_custom_api_models_manual">Список моделей (через запятую):</label>
+                        <input type="text" id="translate_custom_api_models_manual" placeholder="model1,model2,model3" style="width: 100%;">
+                        <div class="small">Укажите модели вручную, если автоматическое получение не удалось</div>
+                    </div>
+                </div>
+
+                <div class="models-section">
+                    <label for="translate_model">Модель перевода:</label>
+                    <div style="display: flex; gap: 10px; align-items: center;">
+                        <select name="translate_model" id="translate_model" required style="flex: 1;">
+                            {% for model in model_options.translate %}
+                                <option value="{{model.name}}" data-downloaded="{{model.downloaded}}"
+                                    {% if model.metrics %}data-metrics='{{ model.metrics | tojson | safe }}'{% endif %}
+                                    {% if model.metrics_summary %}data-metrics-summary="{{ model.metrics_summary }}"{% endif %}>
+                                    {{model.display_name}}
+                                    {% if model.downloaded %}
+                                        (скачано)
+                                    {% else %}
+                                        (требуется скачать)
+                                    {% endif %}
+                                    {% if model.metrics_summary %}
+                                        — {{ model.metrics_summary }}
+                                    {% endif %}
+                                </option>
+                            {% endfor %}
+                        </select>
+                        <button class="download-btn" type="button" id="translate_download_btn" style="display: none;" onclick="downloadSelectedModel('translate')">Скачать</button>
+                    </div>
+                    <div class="small" id="translate_metrics_hint">Нет данных о производительности выбранной модели.</div>
+                </div>
+                <div class="models-section">
+                    <label for="translation_mode">Архитектура перевода:</label>
+                    <select name="translation_mode" id="translation_mode">
+                        <option value="block" {% if config.DEFAULT_TRANSLATION_MODE == "block" %}selected{% endif %}>Блочный режим — максимальная точность (по умолчанию)</option>
+                        <option value="full" {% if config.DEFAULT_TRANSLATION_MODE == "full" %}selected{% endif %}>Единый запрос — быстрее, меньше обращений к модели</option>
+                    </select>
+                    <div class="small">Режим применяется к DOCX/PPTX/XLSX. Для PDF пока всегда используется блочный перевод.</div>
+                </div>
+                <div class="models-section">
+                    <label><input type="checkbox" name="pdf_reflow" id="pdf_reflow" {% if config.DEFAULT_PDF_REFLOW %}checked{% endif %}> Перевод PDF с сохранением макета</label>
+                    <div class="small">Если включено, текст в PDF будет заменён непосредственно в документе.</div>
+                    <label for="image_translation_mode">Перевод текста на изображениях:</label>
+                    <select name="image_translation_mode" id="image_translation_mode">
+                        <option value="notes" {% if config.DEFAULT_IMAGE_TRANSLATION_MODE == "notes" %}selected{% endif %}>Извлечь текст и добавить в заметки</option>
+                        <option value="redesign" {% if config.DEFAULT_IMAGE_TRANSLATION_MODE == "redesign" %}selected{% endif %}>Перерисовать изображения с переводом</option>
+                    </select>
+                </div>
+                <button type="submit">Отправить в очередь</button>
+            </form>
+            <div id="docJobStatus" class="job-status"></div>
+        </section>
+
+        <section id="jobsTab" class="tab-section" style="display:none;">
+            <h2>Мои задания</h2>
+            <button class="btn" type="button" onclick="loadJobs()">Обновить</button>
+            <div id="jobsList" class="job-list"></div>
+        </section>
 
         <div class="small" style="margin-top:28px;">
             <b>Каталог моделей:</b> {{config.MODEL_DIR}}<br>
@@ -115,61 +314,268 @@
         transcribeModel: "insight_transcribe_model",
         summarizeModel: "insight_summarize_model",
         customApiUrl: "insight_custom_api_url",
-        customApiModels: "insight_custom_api_models"
+        customApiModels: "insight_custom_api_models",
+        translateBackend: "insight_translate_backend",
+        translateModel: "insight_translate_model",
+        translateTarget: "insight_translate_target",
+        translateCustomApiUrl: "insight_translate_custom_api_url",
+        translateCustomApiModels: "insight_translate_custom_api_models",
+        pdfReflow: "insight_pdf_reflow",
+        imageMode: "insight_image_translation_mode",
+        translationMode: "insight_translation_mode"
     };
 
     const summaryBackendSelect = document.getElementById("summary_backend_selector");
     const customApiBlock = document.getElementById("custom_api_block");
     const customApiUrlInput = document.getElementById("custom_api_url");
-    const customApiModelsInput = document.getElementById("custom_api_models");
+    const customApiStatusEl = document.getElementById("custom_api_status");
+    const customApiManualModelsBlock = document.getElementById("custom_api_manual_models");
+    const customApiModelsManualInput = document.getElementById("custom_api_models_manual");
+    let customApiModelsCache = []; // Кеш моделей из пользовательского API
     const transcribeSelect = document.getElementById("transcribe_model");
     const summarizeSelect = document.getElementById("summarize_model");
+    const targetLanguageSelect = document.getElementById("target_language");
+    const translateModelSelect = document.getElementById("translate_model");
+    const translateBackendSelect = document.getElementById("translate_backend_selector");
+    const translateCustomApiBlock = document.getElementById("translate_custom_api_block");
+    const translateCustomApiUrlInput = document.getElementById("translate_custom_api_url");
+    const translateCustomApiStatusEl = document.getElementById("translate_custom_api_status");
+    const translateCustomApiManualModelsBlock = document.getElementById("translate_custom_api_manual_models");
+    const translateCustomApiModelsManualInput = document.getElementById("translate_custom_api_models_manual");
+    let translateCustomApiModelsCache = []; // Кеш моделей из пользовательского API для перевода
+    const pdfReflowCheckbox = document.getElementById("pdf_reflow");
+    const imageModeSelect = document.getElementById("image_translation_mode");
+    const translationModeSelect = document.getElementById("translation_mode");
+    const summaryMetricsHint = document.getElementById("summary_metrics_hint");
+    const translateMetricsHint = document.getElementById("translate_metrics_hint");
+    let summarizerModelMetrics = {};
+    let translateModelMetrics = {};
 
-    function showNotify(msg, error=false) {
+    function showNotify(msg, error=false, traceback=null, persistent=false) {
         var notif = document.getElementById('notify');
-        notif.textContent = msg;
+        notif.innerHTML = '';
+        var msgSpan = document.createElement('span');
+        msgSpan.textContent = msg;
+        notif.appendChild(msgSpan);
+        if (traceback) {
+            var details = document.createElement('details');
+            details.style.marginTop = '8px';
+            details.style.fontSize = '11px';
+            var summary = document.createElement('summary');
+            summary.textContent = 'Детали ошибки (нажмите для копирования)';
+            summary.style.cursor = 'pointer';
+            var pre = document.createElement('pre');
+            pre.style.whiteSpace = 'pre-wrap';
+            pre.style.fontSize = '10px';
+            pre.textContent = traceback;
+            details.appendChild(summary);
+            details.appendChild(pre);
+            notif.appendChild(details);
+            summary.onclick = function(e) {
+                e.stopPropagation();
+                navigator.clipboard.writeText(traceback).then(() => {
+                    summary.textContent = 'Скопировано!';
+                    setTimeout(() => summary.textContent = 'Детали ошибки (нажмите для копирования)', 2000);
+                });
+            };
+        }
+        var copyBtn = document.createElement('button');
+        copyBtn.className = 'copy-btn';
+        copyBtn.textContent = 'Копировать';
+        copyBtn.onclick = function(e) {
+            e.stopPropagation();
+            var textToCopy = traceback ? msg + '\n\n' + traceback : msg;
+            navigator.clipboard.writeText(textToCopy).then(() => {
+                copyBtn.textContent = 'Скопировано!';
+                setTimeout(() => copyBtn.textContent = 'Копировать', 2000);
+            });
+        };
+        notif.appendChild(copyBtn);
+        var closeBtn = document.createElement('button');
+        closeBtn.className = 'close-btn';
+        closeBtn.textContent = '✕';
+        closeBtn.onclick = function(e) {
+            e.stopPropagation();
+            notif.style.display = 'none';
+        };
+        notif.appendChild(closeBtn);
         notif.className = 'notify'+(error?' error':'');
         notif.style.display='block';
+        if (!error && !persistent) {
         setTimeout(() => notif.style.display='none', 4000);
+        }
+    }
+
+    function buildMetricsMap(items){
+        const map = {};
+        items.forEach(item => {
+            if(item.metrics){
+                map[item.name] = item.metrics;
+            }
+        });
+        return map;
+    }
+
+    function updateLLMMetricLabels(){
+        if(summaryMetricsHint && summarizerModelMetrics && summarizeSelect){
+            const summaryMetrics = summarizerModelMetrics[summarizeSelect.value];
+            summaryMetricsHint.textContent = formatMetrics(summaryMetrics) || "Нет данных о производительности выбранной модели.";
+        }
+        if(translateMetricsHint && translateModelSelect){
+            const translateMetrics = translateModelMetrics[translateModelSelect.value];
+            translateMetricsHint.textContent = formatMetrics(translateMetrics) || "Нет данных о производительности выбранной модели.";
+        }
+    }
+
+    function formatMetrics(metrics){
+        if(!metrics){
+            return null;
+        }
+        const parts = [];
+        if(typeof metrics.ttft === "number"){
+            parts.push(`TTFT ${metrics.ttft.toFixed(2)}с`);
+        }
+        if(typeof metrics.tpot_ms === "number"){
+            parts.push(`TPOT ${metrics.tpot_ms.toFixed(0)}мс`);
+        }
+        if(typeof metrics.throughput === "number"){
+            parts.push(`${metrics.throughput.toFixed(1)} ток/с`);
+        }
+        return parts.join(" · ");
+    }
+
+    function getLLMEstimate(scope){
+        const map = scope === 'summarize' ? summarizerModelMetrics : translateModelMetrics;
+        const selectEl = scope === 'summarize' ? summarizeSelect : translateModelSelect;
+        if(!selectEl || !map){
+            return null;
+        }
+        const metrics = map[selectEl.value];
+        if(!metrics || !metrics.throughput || metrics.throughput <= 0){
+            return null;
+        }
+        const tokens = metrics.avg_eval_count || 400;
+        const ttft = typeof metrics.ttft === "number" ? metrics.ttft : 0;
+        return Math.max(ttft + (tokens / metrics.throughput), 1);
+    }
+
+    function updateDownloadButton(selectId, buttonId) {
+        const select = document.getElementById(selectId);
+        const btn = document.getElementById(buttonId);
+        if (!select || !btn) return;
+        const selectedOption = select.options[select.selectedIndex];
+        const isDownloaded = selectedOption.getAttribute('data-downloaded') === 'true';
+        btn.style.display = isDownloaded ? 'none' : 'block';
+        if(!isDownloaded){
+            btn.textContent = 'Скачать ' + selectedOption.textContent.split(' (')[0];
+        }
+    }
+
+    function downloadSelectedModel(type) {
+        const selectId = type === 'transcribe' ? 'transcribe_model'
+            : type === 'summarize' ? 'summarize_model'
+            : type === 'translate' ? 'translate_model' : null;
+        if(!selectId) return;
+        const select = document.getElementById(selectId);
+        if (!select) return;
+        const modelName = select.value;
+        downloadModel(modelName, type === 'translate' ? 'summarize' : type);
     }
 
     function downloadModel(name, type) {
-        showNotify('Скачивание модели '+name+'...');
-        document.getElementById('progress-bar').style.display='block';
+        showNotify('Скачивание модели '+name+'... Это может занять несколько минут.', false, null, true);
+        var progressBar = document.getElementById('progress-bar');
+        var progressValue = document.getElementById('progress-value');
+        progressBar.style.display='block';
+        progressValue.style.width='10%';
+        
+        // Для моделей транскрипции показываем индикатор прогресса
+        if(type === 'transcribe'){
+            var progressInterval = setInterval(function(){
+                var current = parseInt(progressValue.style.width) || 10;
+                if(current < 90){
+                    progressValue.style.width = (current + 5) + '%';
+                }
+            }, 2000);
+        }
+        
         var xhr = new XMLHttpRequest();
         xhr.open("POST", "/download_model", true);
         xhr.setRequestHeader("Content-Type", "application/x-www-form-urlencoded");
         xhr.onprogress=function(e){
-            var percent = e.lengthComputable?Math.floor(100*e.loaded/e.total):50;
-            document.getElementById('progress-value').style.width=percent+"%";
+            if(e.lengthComputable){
+                var percent = Math.floor(100*e.loaded/e.total);
+                progressValue.style.width=percent+"%";
+            }
         };
         xhr.onload = function(){
-            document.getElementById('progress-bar').style.display='none';
-            document.getElementById('progress-value').style.width="0%";
+            if(type === 'transcribe'){
+                clearInterval(progressInterval);
+            }
+            progressValue.style.width="100%";
+            setTimeout(function(){
+                progressBar.style.display='none';
+                progressValue.style.width="0%";
+            }, 500);
             try {
                 var data = JSON.parse(xhr.responseText);
-                if(data.status=="OK") showNotify("Модель успешно скачана!");
-                else showNotify("Ошибка: "+(data.message||"не удалось скачать"), true);
+                if(data.status=="OK") {
+                    showNotify("Модель успешно скачана!");
+                    // Сохраняем выбранную модель перед перезагрузкой
+                    if(type === 'transcribe'){
+                        localStorage.setItem(STORAGE_KEYS.transcribeModel, name);
+                    } else if(type === 'summarize'){
+                        localStorage.setItem(STORAGE_KEYS.summarizeModel, name);
+                    }
+                    setTimeout(() => location.reload(), 1500);
+                } else {
+                    showNotify("Ошибка: "+(data.message||"не удалось скачать"), true, data.traceback || null, true);
+                }
             } catch(e){
-                showNotify("Сбой скачивания модели", true);
+                showNotify("Сбой скачивания модели: " + e.message, true, null, true);
             }
-            location.reload();
         };
         xhr.onerror = function(){
-            document.getElementById('progress-bar').style.display='none';
-            showNotify("Ошибка запроса к серверу!", true);
+            if(type === 'transcribe'){
+                clearInterval(progressInterval);
+            }
+            progressBar.style.display='none';
+            progressValue.style.width="0%";
+            showNotify("Ошибка запроса к серверу!", true, null, true);
         };
         xhr.send("model_name="+encodeURIComponent(name)+"&model_type="+encodeURIComponent(type));
     }
 
-    function populateSelect(selectEl, items, storageKey){
+    function ensureOption(selectEl, value){
+        if(!value) return;
+        const exists = Array.from(selectEl.options).some(opt => opt.value === value);
+        if(!exists){
+            const opt = document.createElement("option");
+            opt.value = value;
+            opt.textContent = value.toUpperCase();
+            selectEl.appendChild(opt);
+        }
+    }
+
+    function populateSelect(selectEl, items, storageKey, scope){
         const saved = localStorage.getItem(storageKey);
         const currentValue = selectEl.value;
         selectEl.innerHTML = "";
         items.forEach(item => {
             const opt = document.createElement("option");
             opt.value = item.name;
-            opt.textContent = `${item.display_name} ${item.downloaded ? "(скачано)" : "(требуется скачать)"}`;
+            opt.setAttribute('data-downloaded', item.downloaded ? 'true' : 'false');
+            if(scope && item.metrics){
+                opt.dataset.metrics = JSON.stringify(item.metrics);
+            }
+            if(scope && item.metrics_summary){
+                opt.dataset.metricsSummary = item.metrics_summary;
+            }
+            let label = `${item.display_name} ${item.downloaded ? "(скачано)" : "(требуется скачать)"}`;
+            if(scope && item.metrics_summary){
+                label += ` — ${item.metrics_summary}`;
+            }
+            opt.textContent = label;
             selectEl.appendChild(opt);
         });
         const preferred = saved && items.find(i => i.name === saved) ? saved : (items[0]?.name || "");
@@ -177,20 +583,24 @@
             selectEl.value = preferred;
             localStorage.setItem(storageKey, preferred);
         }
+        if(scope === 'summarize'){
+            summarizerModelMetrics = buildMetricsMap(items);
+        } else if(scope === 'translate'){
+            translateModelMetrics = buildMetricsMap(items);
+        }
+        if(scope){
+            updateLLMMetricLabels();
+        }
     }
 
-    function renderDownloadButtons(containerId, items, type){
-        const container = document.getElementById(containerId);
-        if(!container) return;
-        container.innerHTML = "";
-        items.filter(item => !item.downloaded).forEach(item => {
-            const btn = document.createElement("button");
-            btn.type = "button";
-            btn.className = "download-btn";
-            btn.textContent = `Скачать ${item.display_name}`;
-            btn.onclick = () => downloadModel(item.name, type);
-            container.appendChild(btn);
-        });
+    function updateDownloadButtonsForType(type) {
+        if (type === 'transcribe') {
+            updateDownloadButton('transcribe_model', 'transcribe_download_btn', 'transcribe');
+        } else if (type === 'summarize') {
+            updateDownloadButton('summarize_model', 'summarize_download_btn', 'summarize');
+        } else if (type === 'translate') {
+            updateDownloadButton('translate_model', 'translate_download_btn', 'translate');
+        }
     }
 
     function applyBackendState(){
@@ -201,65 +611,414 @@
         loadModelOptions();
     }
 
+    async function checkCustomApi(scope){
+        const isTranslate = scope === 'translate';
+        const urlInput = isTranslate ? translateCustomApiUrlInput : customApiUrlInput;
+        const statusEl = isTranslate ? translateCustomApiStatusEl : customApiStatusEl;
+        const manualBlock = isTranslate ? translateCustomApiManualModelsBlock : customApiManualModelsBlock;
+        const manualInput = isTranslate ? translateCustomApiModelsManualInput : customApiModelsManualInput;
+        const url = urlInput.value.trim();
+        
+        if(!url){
+            if(statusEl) statusEl.textContent = 'Укажите URL API';
+            if(manualBlock) manualBlock.style.display = 'none';
+            return;
+        }
+        
+        if(statusEl) statusEl.textContent = 'Проверка подключения...';
+        if(manualBlock) manualBlock.style.display = 'none';
+        const formData = new FormData();
+        formData.append('api_url', url);
+        formData.append('scope', scope);
+        
+        try{
+            const resp = await fetch('/api/check_custom_api', {method: 'POST', body: formData});
+            const data = await resp.json();
+            
+            if(data.status === 'success' || data.status === 'connected'){
+                if(data.models && data.models.length > 0){
+                    // Сохраняем модели в кеш
+                    if(isTranslate){
+                        translateCustomApiModelsCache = data.models.map(m => m.name);
+                    } else {
+                        customApiModelsCache = data.models.map(m => m.name);
+                    }
+                    if(statusEl) statusEl.textContent = `✓ ${data.message || `Найдено моделей: ${data.models.length}`}`;
+                    if(statusEl) statusEl.style.color = '#0a0';
+                    if(manualBlock) manualBlock.style.display = 'none';
+                } else {
+                    // API доступен, но модели не найдены - показываем поле для ручного ввода
+                    if(statusEl) statusEl.textContent = data.message || 'API доступен, но модели не найдены';
+                    if(statusEl) statusEl.style.color = '#ff8800';
+                    if(manualBlock) manualBlock.style.display = 'block';
+                    // Загружаем модели из ручного ввода, если они есть
+                    if(manualInput && manualInput.value.trim()){
+                        const manualModels = manualInput.value.split(',').map(m => m.trim()).filter(m => m);
+                        if(manualModels.length > 0){
+                            if(isTranslate){
+                                translateCustomApiModelsCache = manualModels;
+                            } else {
+                                customApiModelsCache = manualModels;
+                            }
+                        }
+                    }
+                }
+                // Обновляем список моделей
+                loadModelOptions();
+            } else {
+                if(statusEl) statusEl.textContent = `✗ ${data.message || 'Ошибка подключения'}`;
+                if(statusEl) statusEl.style.color = '#c00';
+                if(manualBlock) manualBlock.style.display = 'none';
+            }
+        } catch(e){
+            if(statusEl) statusEl.textContent = `✗ Ошибка: ${e.message}`;
+            if(statusEl) statusEl.style.color = '#c00';
+            if(manualBlock) manualBlock.style.display = 'none';
+        }
+    }
+
     function loadModelOptions(){
         const backend = summaryBackendSelect.value;
+        const translateBackend = translateBackendSelect ? translateBackendSelect.value : 'ollama';
         const params = new URLSearchParams();
         params.append("summary_backend", backend);
-        if(backend === "custom_api"){
-            params.append("custom_models", customApiModelsInput.value || "");
+        if(backend === "custom_api" && customApiModelsCache.length > 0){
+            params.append("custom_models", customApiModelsCache.join(','));
+        }
+        params.append("translate_backend", translateBackend);
+        if(translateBackend === "custom_api" && translateCustomApiModelsCache.length > 0){
+            params.append("translate_custom_models", translateCustomApiModelsCache.join(','));
         }
         fetch(`/list_models?${params.toString()}`)
             .then(resp => resp.json())
             .then(data => {
                 populateSelect(transcribeSelect, data.transcribe || [], STORAGE_KEYS.transcribeModel);
-                populateSelect(summarizeSelect, data.summarize || [], STORAGE_KEYS.summarizeModel);
-                renderDownloadButtons("transcribe_downloads", data.transcribe || [], "transcribe");
-                renderDownloadButtons("summarize_downloads", data.summarize || [], "summarize");
+                populateSelect(summarizeSelect, data.summarize || [], STORAGE_KEYS.summarizeModel, 'summarize');
+                // Обновляем также модель ревью теми же моделями
+                const reviewSelect = document.getElementById('review_model');
+                if(reviewSelect){
+                    const currentValue = reviewSelect.value;
+                    reviewSelect.innerHTML = '<option value="">— не использовать —</option>';
+                    (data.summarize || []).forEach(item => {
+                        const opt = document.createElement('option');
+                        opt.value = item.name;
+                        opt.setAttribute('data-downloaded', item.downloaded ? 'true' : 'false');
+                        let label = `${item.display_name} ${item.downloaded ? "(скачано)" : "(требуется скачать)"}`;
+                        if(item.metrics_summary){
+                            label += ` — ${item.metrics_summary}`;
+                        }
+                        opt.textContent = label;
+                        reviewSelect.appendChild(opt);
+                    });
+                    if(currentValue) reviewSelect.value = currentValue;
+                }
+                if(translateModelSelect && data.translate){
+                    populateSelect(translateModelSelect, data.translate || [], STORAGE_KEYS.translateModel, 'translate');
+                }
+                updateDownloadButtonsForType('transcribe');
+                updateDownloadButtonsForType('summarize');
+                updateDownloadButtonsForType('translate');
+                updateLLMMetricLabels();
             })
             .catch(() => showNotify("Не удалось обновить список моделей", true));
+    }
+
+    function applyTranslateBackendState(){
+        if(!translateBackendSelect) return;
+        const backend = translateBackendSelect.value;
+        if(translateCustomApiBlock){
+            translateCustomApiBlock.style.display = backend === "custom_api" ? "block" : "none";
+        }
+        localStorage.setItem(STORAGE_KEYS.translateBackend, backend);
+        loadModelOptions();
     }
 
     function restoreSettings(){
         const savedBackend = localStorage.getItem(STORAGE_KEYS.backend) || "{{config.SUMMARY_BACKEND}}";
         summaryBackendSelect.value = savedBackend;
         customApiUrlInput.value = localStorage.getItem(STORAGE_KEYS.customApiUrl) || "";
-        customApiModelsInput.value = localStorage.getItem(STORAGE_KEYS.customApiModels) || "";
         customApiBlock.style.display = savedBackend === "custom_api" ? "block" : "none";
         populateSelect(transcribeSelect, {{ model_options.transcribe | tojson }}, STORAGE_KEYS.transcribeModel);
-        populateSelect(summarizeSelect, {{ model_options.summarize | tojson }}, STORAGE_KEYS.summarizeModel);
-        renderDownloadButtons("transcribe_downloads", {{ model_options.transcribe | tojson }}, "transcribe");
-        renderDownloadButtons("summarize_downloads", {{ model_options.summarize | tojson }}, "summarize");
+        populateSelect(summarizeSelect, {{ model_options.summarize | tojson }}, STORAGE_KEYS.summarizeModel, 'summarize');
+        updateDownloadButtonsForType('transcribe');
+        updateDownloadButtonsForType('summarize');
+        const defaultLang = "{{config.TRANSLATION_TARGET_LANG}}";
+        ensureOption(targetLanguageSelect, defaultLang);
+        const savedLang = localStorage.getItem(STORAGE_KEYS.translateTarget) || defaultLang;
+        ensureOption(targetLanguageSelect, savedLang);
+        targetLanguageSelect.value = savedLang;
+        if(translateBackendSelect){
+            const savedTranslateBackend = localStorage.getItem(STORAGE_KEYS.translateBackend) || "ollama";
+            translateBackendSelect.value = savedTranslateBackend;
+            if(translateCustomApiUrlInput){
+                translateCustomApiUrlInput.value = localStorage.getItem(STORAGE_KEYS.translateCustomApiUrl) || "";
+            }
+            if(translateCustomApiBlock){
+                translateCustomApiBlock.style.display = savedTranslateBackend === "custom_api" ? "block" : "none";
+            }
+        }
+        if(translateModelSelect){
+            populateSelect(translateModelSelect, {{ model_options.translate | tojson }}, STORAGE_KEYS.translateModel, 'translate');
+            updateDownloadButtonsForType('translate');
+        }
+        if(pdfReflowCheckbox){
+            const savedPdfReflow = localStorage.getItem(STORAGE_KEYS.pdfReflow);
+            const defaultPdf = {{ 'true' if config.DEFAULT_PDF_REFLOW else 'false' }};
+            pdfReflowCheckbox.checked = savedPdfReflow ? savedPdfReflow === "on" : defaultPdf;
+        }
+        if(imageModeSelect){
+            const savedMode = localStorage.getItem(STORAGE_KEYS.imageMode) || "{{config.DEFAULT_IMAGE_TRANSLATION_MODE}}";
+            imageModeSelect.value = savedMode;
+        }
+        if(translationModeSelect){
+            const savedTranslationMode = localStorage.getItem(STORAGE_KEYS.translationMode) || "{{config.DEFAULT_TRANSLATION_MODE}}";
+            translationModeSelect.value = savedTranslationMode;
+        }
+        updateLLMMetricLabels();
         setTimeout(loadModelOptions, 100);
     }
 
     summaryBackendSelect.addEventListener("change", applyBackendState);
-    customApiUrlInput.addEventListener("input", () => {
+    customApiUrlInput.addEventListener("blur", () => {
         localStorage.setItem(STORAGE_KEYS.customApiUrl, customApiUrlInput.value);
-    });
-    customApiModelsInput.addEventListener("input", () => {
-        localStorage.setItem(STORAGE_KEYS.customApiModels, customApiModelsInput.value);
-        if(summaryBackendSelect.value === "custom_api"){
-            loadModelOptions();
+        if(summaryBackendSelect.value === "custom_api" && customApiUrlInput.value.trim()){
+            // Автоматически проверяем подключение при потере фокуса
+            checkCustomApi('summarize');
         }
     });
+    if(customApiModelsManualInput){
+        customApiModelsManualInput.addEventListener("input", () => {
+            const models = customApiModelsManualInput.value.split(',').map(m => m.trim()).filter(m => m);
+            if(models.length > 0){
+                customApiModelsCache = models;
+                loadModelOptions();
+            }
+        });
+    }
     transcribeSelect.addEventListener("change", () => {
         localStorage.setItem(STORAGE_KEYS.transcribeModel, transcribeSelect.value);
+        updateDownloadButtonsForType('transcribe');
     });
     summarizeSelect.addEventListener("change", () => {
         localStorage.setItem(STORAGE_KEYS.summarizeModel, summarizeSelect.value);
+        updateDownloadButtonsForType('summarize');
+        updateLLMMetricLabels();
+    });
+    if(translateBackendSelect){
+        translateBackendSelect.addEventListener("change", applyTranslateBackendState);
+    }
+    if(translateCustomApiUrlInput){
+        translateCustomApiUrlInput.addEventListener("blur", () => {
+            localStorage.setItem(STORAGE_KEYS.translateCustomApiUrl, translateCustomApiUrlInput.value);
+            if(translateBackendSelect && translateBackendSelect.value === "custom_api" && translateCustomApiUrlInput.value.trim()){
+                // Автоматически проверяем подключение при потере фокуса
+                checkCustomApi('translate');
+            }
+        });
+    }
+    if(translateCustomApiModelsManualInput){
+        translateCustomApiModelsManualInput.addEventListener("input", () => {
+            const models = translateCustomApiModelsManualInput.value.split(',').map(m => m.trim()).filter(m => m);
+            if(models.length > 0){
+                translateCustomApiModelsCache = models;
+                loadModelOptions();
+            }
+        });
+    }
+    if(pdfReflowCheckbox){
+        pdfReflowCheckbox.addEventListener("change", () => {
+            localStorage.setItem(STORAGE_KEYS.pdfReflow, pdfReflowCheckbox.checked ? "on" : "off");
+        });
+    }
+    if(imageModeSelect){
+        imageModeSelect.addEventListener("change", () => {
+            localStorage.setItem(STORAGE_KEYS.imageMode, imageModeSelect.value);
+        });
+    }
+    if(translationModeSelect){
+        translationModeSelect.addEventListener("change", () => {
+            localStorage.setItem(STORAGE_KEYS.translationMode, translationModeSelect.value);
+        });
+    }
+    if(translateModelSelect){
+        translateModelSelect.addEventListener("change", () => {
+            localStorage.setItem(STORAGE_KEYS.translateModel, translateModelSelect.value);
+            updateDownloadButtonsForType('translate');
+            updateLLMMetricLabels();
+        });
+    }
+
+    targetLanguageSelect.addEventListener("change", () => {
+        localStorage.setItem(STORAGE_KEYS.translateTarget, targetLanguageSelect.value);
     });
 
     restoreSettings();
 
-    // Прогресс для самой обработки
-    document.getElementById('processForm').onsubmit = function(){
-        document.getElementById('summary_backend_field').value = summaryBackendSelect.value;
-        document.getElementById('custom_api_url_field').value = customApiUrlInput.value;
-        document.getElementById('custom_api_models_field').value = customApiModelsInput.value;
-        document.getElementById('processBtn').disabled=true;
-        showNotify("Обработка файла...");
-        document.getElementById('progress-bar').style.display='block';
+    
+    </script>
+    <script>
+    // Lightweight override for SSE-based flows
+    const tabs = document.querySelectorAll('.tab-btn');
+    const sections = document.querySelectorAll('.tab-section');
+    function switchTab(tabId){
+        tabs.forEach(btn => btn.classList.toggle('active', btn.dataset.tab === tabId));
+        sections.forEach(sec => sec.style.display = sec.id === tabId ? 'block' : 'none');
+        if(tabId === 'jobsTab'){ loadJobs(); }
     }
+
+    const enableSummaryCheckbox = document.getElementById("enable_summary");
+    const enableTranslationCheckbox = document.getElementById("enable_translation");
+    const targetLanguageAudioSelect = document.getElementById("target_language_audio");
+    const audioLanguageSelect = document.getElementById("audio_language");
+    const presetSelect = document.getElementById("preset");
+    const enableDiarizationCheckbox = document.getElementById("enable_diarization");
+    const beamSizeInput = document.getElementById("beam_size");
+    const temperatureInput = document.getElementById("temperature");
+    const vadFilterSelect = document.getElementById("vad_filter");
+    const noSpeechThresholdInput = document.getElementById("no_speech_threshold");
+    const audioJobStatusEl = document.getElementById("audioJobStatus");
+    const docJobStatusEl = document.getElementById("docJobStatus");
+    const jobsListEl = document.getElementById("jobsList");
+    const promptTemplateSelect = document.getElementById("prompt_template");
+    const customPromptTextarea = document.getElementById("custom_prompt");
+    const jobStreams = new Map();
+
+    if(promptTemplateSelect && customPromptTextarea){
+        promptTemplateSelect.addEventListener("change", () => {
+            const selected = promptTemplateSelect.options[promptTemplateSelect.selectedIndex];
+            const text = selected ? selected.getAttribute("data-text") : "";
+            if(text){
+                customPromptTextarea.value = text;
+            }
+        });
+    }
+
+    function makeJobCard(job){
+        const statusColor = job.status === 'success' ? '#0a0' : job.status === 'failed' ? '#c00' : '#0059b2';
+        const manifest = (job.result_manifest || []).map(item => {
+            const url = `/api/jobs/${job.id}/download/${encodeURIComponent(item.name)}`;
+            return `<a href="${url}" class="btn" download>${item.kind || item.name}</a>`;
+        }).join(' ');
+        const err = job.error_message ? `<div style="color:#c00;font-size:13px;">${job.error_message}</div>` : '';
+        const eta = job.eta_seconds != null ? `ETA: ~${Math.ceil(job.eta_seconds)} c` : '';
+        return `
+            <div class="file-block">
+                <div><b>ID:</b> ${job.id}</div>
+                <div><b>Тип:</b> ${job.job_type}</div>
+                <div><b>Статус:</b> <span style="color:${statusColor}">${job.status}</span> · стадия: ${job.stage} · прогресс: ${job.progress}% ${eta}</div>
+                ${manifest ? `<div style="margin-top:8px;">${manifest}</div>` : ''}
+                ${err}
+            </div>
+        `;
+    }
+
+    function renderJobs(jobs){
+        if(!jobsListEl) return;
+        if(!jobs || jobs.length === 0){
+            jobsListEl.innerHTML = '<p class="small">Заданий пока нет.</p>';
+            return;
+        }
+        jobsListEl.innerHTML = jobs.map(makeJobCard).join('');
+    }
+
+    async function loadJobs(){
+        try{
+            const resp = await fetch('/api/jobs');
+            const data = await resp.json();
+            renderJobs(data);
+        }catch(e){
+            showNotify('Не удалось загрузить задания', true);
+        }
+    }
+
+    function trackJob(jobId, targetEl){
+        if(jobStreams.has(jobId)){ return; }
+        const es = new EventSource(`/api/jobs/${jobId}/events`);
+        jobStreams.set(jobId, es);
+        es.onmessage = (ev)=>{
+            try{
+                const job = JSON.parse(ev.data);
+                if(targetEl){ targetEl.innerHTML = makeJobCard(job); }
+            }catch(_){}
+        };
+        es.onerror = ()=> {
+            es.close();
+            jobStreams.delete(jobId);
+        };
+    }
+
+    async function submitAudio(event){
+        event.preventDefault();
+        const fileInput = document.getElementById('file');
+        if(!fileInput.files.length){ showNotify('Выберите файл', true); return; }
+        const params = {
+            asr_model: document.getElementById('transcribe_model').value,
+            language: audioLanguageSelect.value,
+            preset: presetSelect.value,
+            enable_diarization: enableDiarizationCheckbox.checked,
+            beam_size: beamSizeInput.value ? Number(beamSizeInput.value) : undefined,
+            temperature: temperatureInput.value ? Number(temperatureInput.value) : undefined,
+            vad_filter: vadFilterSelect.value === "" ? undefined : vadFilterSelect.value === "true",
+            no_speech_threshold: noSpeechThresholdInput.value ? Number(noSpeechThresholdInput.value) : undefined,
+            enable_summary: enableSummaryCheckbox.checked,
+            summary_model: document.getElementById('summarize_model').value,
+            summary_backend: document.getElementById('summary_backend_selector').value,
+            summary_custom_api_url: document.getElementById('custom_api_url').value || undefined,
+            review_model: document.getElementById('review_model')?.value || undefined,
+            prompt_template_id: document.getElementById('prompt_template').value || undefined,
+            custom_prompt: document.getElementById('custom_prompt').value || undefined,
+            enable_translation: enableTranslationCheckbox.checked,
+            target_language: targetLanguageAudioSelect.value,
+        };
+        const fd = new FormData();
+        fd.append('file', fileInput.files[0]);
+        fd.append('params', JSON.stringify(params));
+        showNotify('Задача отправлена, ожидайте...', false, null, true);
+        const resp = await fetch('/api/jobs/audio', {method:'POST', body: fd});
+        if(!resp.ok){
+            showNotify('Ошибка отправки задачи', true);
+            return;
+        }
+        const data = await resp.json();
+        audioJobStatusEl.innerHTML = `<p class="small">Job ${data.job_id} создан, ждём события...</p>`;
+        trackJob(data.job_id, audioJobStatusEl);
+        loadJobs();
+    }
+
+    async function submitDoc(event){
+        event.preventDefault();
+        const fileInput = document.getElementById('doc_file');
+        if(!fileInput.files.length){ showNotify('Выберите файл', true); return; }
+        const params = {
+            target_language: document.getElementById('target_language').value,
+            translate_model: document.getElementById('translate_model').value,
+            translate_backend: document.getElementById('translate_backend_selector').value,
+            translate_custom_api_url: document.getElementById('translate_custom_api_url') ? document.getElementById('translate_custom_api_url').value : undefined,
+            translation_mode: document.getElementById('translation_mode').value,
+            pdf_reflow: document.getElementById('pdf_reflow').checked,
+            image_translation_mode: document.getElementById('image_translation_mode').value,
+        };
+        const fd = new FormData();
+        fd.append('file', fileInput.files[0]);
+        fd.append('params', JSON.stringify(params));
+        showNotify('Документ отправлен, ожидайте...', false, null, true);
+        const resp = await fetch('/api/jobs/doc_translate', {method:'POST', body: fd});
+        if(!resp.ok){
+            showNotify('Ошибка отправки задачи', true);
+            return;
+        }
+        const data = await resp.json();
+        docJobStatusEl.innerHTML = `<p class="small">Job ${data.job_id} создан, ждём события...</p>`;
+        trackJob(data.job_id, docJobStatusEl);
+        loadJobs();
+    }
+
+    // Override old handlers with SSE-based ones
+    document.getElementById('processForm').onsubmit = submitAudio;
+    if(document.getElementById('translateForm')){
+        document.getElementById('translateForm').onsubmit = submitDoc;
+    }
+    loadJobs();
     </script>
 </body>
 </html>

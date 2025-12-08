@@ -11,4 +11,25 @@ services:
     environment:
       - MODEL_DIR=/models
       - CONFIG_DIR=/config
+      - CELERY_BROKER_URL=redis://redis:6379/0
+      - CELERY_RESULT_BACKEND=redis://redis:6379/0
+    restart: unless-stopped
+  worker:
+    build: .
+    container_name: insightaudio-worker
+    command: celery -A app.celery_app.celery_app worker --loglevel=INFO --beat
+    environment:
+      - MODEL_DIR=/models
+      - CONFIG_DIR=/config
+      - CELERY_BROKER_URL=redis://redis:6379/0
+      - CELERY_RESULT_BACKEND=redis://redis:6379/0
+    volumes:
+      - ./models:/models
+      - ./config:/config
+      - ./tmp:/tmp
+    depends_on:
+      - redis
+  redis:
+    image: redis:7-alpine
+    container_name: insightaudio-redis
     restart: unless-stopped

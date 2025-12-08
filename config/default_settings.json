@@ -4,10 +4,21 @@
     "CONFIG_DIR": "../config",
     "RESULTS_DIR": "../tmp",
     "LOG_DIR": "../logs",
+    "DB_URL": "sqlite:///../tmp/insightaudio.db",
+    "JOB_TTL_DAYS": 14,
+    "MAX_UPLOAD_MB": 500,
+    "SESSION_COOKIE_NAME": "insight_session",
     "DEFAULT_TRANSCRIBE_MODEL": "whisper-tiny",
     "DEFAULT_SUMMARIZE_MODEL": "llama3:8b",
     "SUMMARY_BACKEND": "ollama",
     "OLLAMA_API_BASE": "http://tsnnlx12bs02.ad.telmast.com:11434",
+    "DEFAULT_TRANSLATE_MODEL": "nllb-200:3.3b",
+    "DEFAULT_TRANSLATION_MODE": "block",
+    "TRANSLATION_TARGET_LANG": "ru",
+    "TRANSLATION_MAX_RATIO": 1.35,
+    "ENABLE_SPEAKER_DIARIZATION": true,
+    "DEFAULT_PDF_REFLOW": false,
+    "DEFAULT_IMAGE_TRANSLATION_MODE": "notes",
     "LLAMA_CPP_MODEL_DIR": "../models/llama_cpp",
     "LLAMA_CPP_MODELS": [],
     "LLAMA_CPP_API_URL": "http://localhost:8080/completion",
@@ -48,6 +59,98 @@
       {"name": "llama3.1:8b", "display_name": "Llama3.1 8B (Ollama)", "size": "4.0GB", "downloaded": false},
       {"name": "mistral:7b", "display_name": "Mistral 7B (Ollama)", "size": "4.1GB", "downloaded": false}
     ]
+  },
+  "MODEL_TUNING": {
+    "qwen2.5-coder:32b": {
+      "context_length": 32000,
+      "quantization": "Q4_K_M",
+      "options": {"num_ctx": 32000, "num_batch": 2, "temperature": 0.35, "top_p": 0.9, "top_k": 40}
+    },
+    "qwen2.5:72b": {
+      "context_length": 64000,
+      "quantization": "Q4_K_S",
+      "options": {"num_ctx": 64000, "num_batch": 1, "temperature": 0.4, "top_p": 0.9, "top_k": 40}
+    },
+    "deepseek-coder-v2:236b": {
+      "context_length": 96000,
+      "quantization": "Q4_K_M",
+      "options": {"num_ctx": 96000, "num_batch": 1, "temperature": 0.25, "top_p": 0.85, "top_k": 50}
+    },
+    "deepseek-r1:1.15b": {
+      "context_length": 16000,
+      "quantization": "Q4_0",
+      "options": {"num_ctx": 16000, "temperature": 0.6, "top_p": 0.85, "top_k": 45}
+    },
+    "deepseek-r1:32b": {
+      "context_length": 64000,
+      "quantization": "Q4_K_M",
+      "options": {"num_ctx": 64000, "num_batch": 2, "temperature": 0.3, "top_p": 0.85, "top_k": 45}
+    },
+    "deepseek-r1:70b": {
+      "context_length": 80000,
+      "quantization": "Q4_K_S",
+      "options": {"num_ctx": 80000, "num_batch": 1, "temperature": 0.25, "top_p": 0.82, "top_k": 40}
+    },
+    "devstral:latest": {
+      "context_length": 32000,
+      "quantization": "Q4_K_M",
+      "options": {"num_ctx": 32000, "temperature": 0.5, "top_p": 0.9, "top_k": 50}
+    },
+    "gemma3:27b": {
+      "context_length": 32000,
+      "quantization": "Q4_K_M",
+      "options": {"num_ctx": 32000, "temperature": 0.5, "top_p": 0.92, "top_k": 40}
+    },
+    "glm-4.6:cloud": {
+      "context_length": 32000,
+      "quantization": "bf16",
+      "options": {"num_ctx": 32000, "temperature": 0.45, "top_p": 0.9, "top_k": 40}
+    },
+    "gpt-oss:120b": {
+      "context_length": 64000,
+      "quantization": "Q4_K_M",
+      "options": {"num_ctx": 64000, "num_batch": 1, "temperature": 0.3, "top_p": 0.88, "top_k": 45}
+    },
+    "hf.co/t-tech/T-pro-it-1.0-Q8_0-GCUF:latest": {
+      "context_length": 16000,
+      "quantization": "Q8_0",
+      "options": {"num_ctx": 16000, "temperature": 0.55, "top_p": 0.9, "top_k": 40}
+    },
+    "llama3.3:latest": {
+      "context_length": 32000,
+      "quantization": "Q4_K_M",
+      "options": {"num_ctx": 32000, "temperature": 0.55, "top_p": 0.9, "top_k": 40}
+    },
+    "qwen3-coder:latest": {
+      "context_length": 64000,
+      "quantization": "Q4_K_M",
+      "options": {"num_ctx": 64000, "num_batch": 2, "temperature": 0.35, "top_p": 0.9, "top_k": 40}
+    },
+    "qwen3-vl:235b": {
+      "context_length": 65536,
+      "quantization": "bf16",
+      "options": {"num_ctx": 65536, "temperature": 0.4, "top_p": 0.85, "top_k": 40}
+    },
+    "qwen3-vl:32b": {
+      "context_length": 32000,
+      "quantization": "Q4_K_M",
+      "options": {"num_ctx": 32000, "temperature": 0.45, "top_p": 0.9, "top_k": 45}
+    },
+    "qwen3:32b": {
+      "context_length": 32000,
+      "quantization": "Q4_K_M",
+      "options": {"num_ctx": 32000, "temperature": 0.5, "top_p": 0.9, "top_k": 45}
+    },
+    "qwen3:32b-fp16": {
+      "context_length": 32000,
+      "quantization": "fp16",
+      "options": {"num_ctx": 32000, "temperature": 0.5, "top_p": 0.9, "top_k": 45}
+    },
+    "qwq:32b": {
+      "context_length": 28000,
+      "quantization": "Q4_K_M",
+      "options": {"num_ctx": 28000, "temperature": 0.45, "top_p": 0.9, "top_k": 40}
+    }
   }
 }
 

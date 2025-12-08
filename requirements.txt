@@ -1,7 +1,31 @@
+# Build essentials
+Cython>=0.29.37
+setuptools>=70.0.0
+wheel
+
+# Core packages
 fastapi==0.110.1
 uvicorn==0.29.0
 python-multipart==0.0.7
 jinja2==3.1.3
-whisper
-faster-whisper==1.0.3
 requests==2.31.0
+celery[redis]==5.3.6
+redis==5.0.3
+SQLAlchemy==2.0.36
+alembic==1.13.2
+python-docx==0.8.11
+python-pptx==0.6.23
+openpyxl==3.1.5
+pymupdf==1.24.5
+pytesseract==0.3.10
+Pillow==10.3.0
+opencv-python-headless==4.10.0.84
+soundfile==0.12.1
+pytesseract
+
+# Whisper & faster-whisper
+openai-whisper
+faster-whisper==1.0.3
+
+## NeMo — this pulls in youtokentome, so everything above must already be installed
+#nemo-toolkit[asr]==1.23.0

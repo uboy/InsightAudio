@@ -1,23 +1,40 @@
 FROM python:3.10-slim
 
-# Установка необходимых утилит
-RUN apt-get update && apt-get install -y ffmpeg git wget unzip && rm -rf /var/lib/apt/lists/*
+# System dependencies (ffmpeg + build tools for numpy/scipy/torch etc.)
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    ffmpeg \
+    git \
+    wget \
+    unzip \
+    build-essential \
+    gcc \
+    g++ \
+    libsndfile1 \
+    tesseract-ocr \
+    && rm -rf /var/lib/apt/lists/*
 
-# Рабочая директория
 WORKDIR /app
 
-# Копирование зависимостей
-COPY requirements.txt ./
-RUN pip install --no-cache-dir -r requirements.txt
+# Copy only requirements first (better layer caching)
+COPY requirements.txt .
 
-# Копирование приложения
+# Install Python dependencies
+RUN pip install --no-cache-dir --upgrade pip setuptools wheel \
+    && pip install --no-cache-dir -r requirements.txt
+
+# Workaround for this package
+RUN pip install --no-cache-dir --no-build-isolation "nemo-toolkit[asr]==1.23.0"
+
+# Copy application code and default configs
 COPY app/ ./app/
+# Keep both default_settings.json and a seeded config.json for first run
+COPY config/default_settings.json ./config/default_settings.json
+COPY config/prompt_templates.json ./config/prompt_templates.json
+RUN cp ./config/default_settings.json ./config/config.json
 
-# Создание необходимых папок для конфигов/моделей (volume монтируются на host)
+# Create directories
 RUN mkdir -p /models /config /tmp
 
-# Экспонируемый порт
 EXPOSE 55667
 
-# Старт приложения через uvicorn (FastAPI)
 CMD ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "55667"]

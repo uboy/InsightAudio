@@ -29,6 +29,11 @@ def _normalize_config(cfg: Dict[str, Any]) -> Dict[str, Any]:
         if key in cfg and isinstance(cfg[key], str):
             cfg[key] = _normalize_path(cfg[key])
     cfg.setdefault("LLAMA_CPP_MODELS", [])
+    cfg.setdefault("ENABLE_SPEAKER_DIARIZATION", True)
+    cfg.setdefault("DEFAULT_PDF_REFLOW", False)
+    cfg.setdefault("DEFAULT_IMAGE_TRANSLATION_MODE", "notes")
+    cfg.setdefault("DEFAULT_TRANSLATION_MODE", "block")
+    cfg.setdefault("MODEL_TUNING", {})
     cfg.setdefault("CUSTOM_SUMMARY_API_HEADERS", {})
     return cfg
 
