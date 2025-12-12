@@ -52,7 +52,7 @@
                     <div style="display: flex; gap: 10px; align-items: center;">
                         <select name="transcribe_model" id="transcribe_model" required style="flex: 1;">
                         {% for model in model_options.transcribe %}
-                                <option value="{{model.name}}" data-downloaded="{{model.downloaded}}">
+                                <option value="{{model.name}}" data-downloaded="{{ 'true' if model.downloaded else 'false' }}">
                                 {{model.display_name}}
                                 {% if model.downloaded %}
                                     (скачано)
@@ -145,7 +145,7 @@
                     <div style="display: flex; gap: 10px; align-items: center;">
                         <select name="summarize_model" id="summarize_model" required style="flex: 1;">
                         {% for model in model_options.summarize %}
-                                <option value="{{model.name}}" data-downloaded="{{model.downloaded}}"
+                                <option value="{{model.name}}" data-downloaded="{{ 'true' if model.downloaded else 'false' }}"
                                     {% if model.metrics %}data-metrics='{{ model.metrics | tojson | safe }}'{% endif %}
                                     {% if model.metrics_summary %}data-metrics-summary="{{ model.metrics_summary }}"{% endif %}>
                                 {{model.display_name}}
@@ -171,7 +171,7 @@
                         <select name="review_model" id="review_model" style="flex: 1;">
                             <option value="">— не использовать —</option>
                         {% for model in model_options.summarize %}
-                                <option value="{{model.name}}" data-downloaded="{{model.downloaded}}"
+                                <option value="{{model.name}}" data-downloaded="{{ 'true' if model.downloaded else 'false' }}"
                                     {% if model.metrics %}data-metrics='{{ model.metrics | tojson | safe }}'{% endif %}
                                     {% if model.metrics_summary %}data-metrics-summary="{{ model.metrics_summary }}"{% endif %}>
                                 {{model.display_name}}
@@ -277,7 +277,7 @@
                     <div style="display: flex; gap: 10px; align-items: center;">
                         <select name="translate_model" id="translate_model" required style="flex: 1;">
                             {% for model in model_options.translate %}
-                                <option value="{{model.name}}" data-downloaded="{{model.downloaded}}"
+                                <option value="{{model.name}}" data-downloaded="{{ 'true' if model.downloaded else 'false' }}"
                                     {% if model.metrics %}data-metrics='{{ model.metrics | tojson | safe }}'{% endif %}
                                     {% if model.metrics_summary %}data-metrics-summary="{{ model.metrics_summary }}"{% endif %}>
                                     {{model.display_name}}
@@ -490,7 +490,8 @@
         if (!select || !btn) return;
         const selectedOption = select.options[select.selectedIndex];
         if (!selectedOption) return;
-        const isDownloaded = selectedOption.getAttribute('data-downloaded') === 'true';
+        const downloadedAttr = selectedOption.getAttribute('data-downloaded');
+        const isDownloaded = String(downloadedAttr).toLowerCase() === 'true';
         btn.style.display = isDownloaded ? 'none' : 'block';
         if(!isDownloaded){
             const modelName = selectedOption.textContent.split(' (')[0];
