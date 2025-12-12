@@ -4,9 +4,7 @@
     <option name="autoReloadType" value="SELECTIVE" />
   </component>
   <component name="ChangeListManager">
-    <list default="true" id="27c1b00d-8878-4a90-9c2a-cb5b391cddc9" name="Changes" comment="fixing model download">
-      <change beforePath="$PROJECT_DIR$/.idea/workspace.xml" beforeDir="false" afterPath="$PROJECT_DIR$/.idea/workspace.xml" afterDir="false" />
-    </list>
+    <list default="true" id="27c1b00d-8878-4a90-9c2a-cb5b391cddc9" name="Changes" comment="Add logging config/rotation, improve audio job progress visibility, and auto-cancel stale jobs" />
     <option name="SHOW_DIALOG" value="false" />
     <option name="HIGHLIGHT_CONFLICTS" value="true" />
     <option name="HIGHLIGHT_NON_ACTIVE_CHANGELIST" value="false" />
@@ -73,6 +71,8 @@
     <MESSAGE value="add GPU support" />
     <MESSAGE value="feat: add ASR engine/model selection, honest progress/ETA, and robust jobs downloads&#10;&#10;- support auto/faster-whisper/openai-whisper engines with recommended labels and engine-aware params&#10;- implement live ASR progress (≤2s updates) for faster-whisper and reliable ETA fallback for openai-whisper&#10;- unify results storage via job_dir + manifest-only downloads (secure, resumable)&#10;- enforce chunked uploads, SQLite WAL/timeout, and TTL cleanup&#10;- expand prompt templates + per-run editable prompts and LLM tuning" />
     <MESSAGE value="fixing model download" />
-    <option name="LAST_COMMIT_MESSAGE" value="fixing model download" />
+    <MESSAGE value="add cancel jobs functionality" />
+    <MESSAGE value="Add logging config/rotation, improve audio job progress visibility, and auto-cancel stale jobs" />
+    <option name="LAST_COMMIT_MESSAGE" value="Add logging config/rotation, improve audio job progress visibility, and auto-cancel stale jobs" />
   </component>
 </project>

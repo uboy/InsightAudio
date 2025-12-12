@@ -128,6 +128,8 @@ def transcribe(
     Returns:
         {"text": "...", "segments": [{"start": 0.0, "end": 1.5, "text": "..."}]}
     """
+    import logging
+    logger = logging.getLogger("insightaudio.transcriber")
     file_hash = _get_file_hash(input_path)
     
     # Определяем движок для использования
@@ -145,6 +147,7 @@ def transcribe(
                 asr_engine = "openai_whisper"
         else:
             asr_engine = "openai_whisper"
+    logger.info("Transcribe: engine=%s model=%s language=%s enable_diarization=%s", asr_engine, model, language, enable_diarization)
     
     # Кэш ключ должен включать движок
     cache_key_parts = [
@@ -184,8 +187,6 @@ def transcribe(
             language = None  # Автоопределение
     
     # Логируем для отладки
-    import logging
-    logger = logging.getLogger("insightaudio.transcriber")
     logger.debug("Language processing: original=%s, final=%s", original_language, language)
 
     diarization_segments = []

@@ -1,3 +1,4 @@
+import gzip
 import json
 import logging
 import os
@@ -6,9 +7,7 @@ import traceback
 from datetime import datetime
 from typing import Dict, List, Optional
 
-LOGGER = logging.getLogger("insightaudio.tasks")
-
-from app import summarizer, transcriber, translator
+from app import config_manager, summarizer, transcriber, translator
 from app.celery_app import celery_app
 from app.job_service import (
     build_user_job_dir,
@@ -19,6 +18,63 @@ from app.job_service import (
 from app.db import session_scope
 from app.db_models import Job
 import json
+from app.db import SessionLocal
+
+
+def _configure_worker_logging() -> logging.Logger:
+    """Ensure celery workers have the same logging config as the web app."""
+    cfg = config_manager.get_config()
+    level_name = str(cfg.get("LOG_LEVEL", "INFO")).upper()
+    level = getattr(logging, level_name, logging.INFO)
+    log_dir = os.path.abspath(cfg.get("LOG_DIR", "./logs"))
+    os.makedirs(log_dir, exist_ok=True)
+    log_file = os.path.join(log_dir, "server.log")
+
+    logger = logging.getLogger("insightaudio")
+    logger.setLevel(level)
+    if logger.handlers:
+        for h in logger.handlers:
+            h.setLevel(level)
+        return logger
+
+    formatter = logging.Formatter(
+        "%(asctime)s [%(levelname)s] %(name)s:%(funcName)s:%(lineno)d - %(message)s",
+        datefmt="%Y-%m-%d %H:%M:%S",
+    )
+    file_handler = logging.handlers.RotatingFileHandler(
+        log_file,
+        maxBytes=int(cfg.get("LOG_FILE_MAX_MB", 5)) * 1024 * 1024,
+        backupCount=int(cfg.get("LOG_BACKUP_COUNT", 5)),
+        encoding="utf-8",
+    )
+    file_handler.setLevel(level)
+    file_handler.setFormatter(formatter)
+
+    def _rotator(source, dest):
+        with open(source, "rb") as f_in, gzip.open(dest, "wb") as f_out:
+            shutil.copyfileobj(f_in, f_out)
+        try:
+            os.remove(source)
+        except OSError:
+            pass
+
+    file_handler.rotator = _rotator
+    file_handler.namer = lambda name: f"{name}.gz"
+
+    stream_handler = logging.StreamHandler()
+    stream_handler.setFormatter(formatter)
+    stream_handler.setLevel(level)
+
+    logger.addHandler(file_handler)
+    logger.addHandler(stream_handler)
+
+    logging.getLogger("app").setLevel(level)
+    logging.getLogger("celery").setLevel(level)
+
+    return logger
+
+
+LOGGER = _configure_worker_logging()
 
 PRESETS = {
     "quality": {"beam_size": 5, "temperature": 0.0, "vad_filter": True, "loudnorm": True},
@@ -29,6 +85,7 @@ PRESETS = {
 STAGE_WEIGHTS = {
     "upload_saved": 5,
     "audio_preprocess": 10,
+    "loading_model": 5,
     "transcribing": 45,
     "summarizing": 20,
     "reviewing": 5,
@@ -40,7 +97,17 @@ STAGE_WEIGHTS = {
 def _calc_progress(stage: str, inner_fraction: float = 0.0) -> int:
     passed = 0
     total = 0
-    stages = ["upload_saved", "audio_preprocess", "transcribing", "summarizing", "reviewing", "translating", "saving", "done"]
+    stages = [
+        "upload_saved",
+        "audio_preprocess",
+        "loading_model",
+        "transcribing",
+        "summarizing",
+        "reviewing",
+        "translating",
+        "saving",
+        "done",
+    ]
     for s in stages:
         weight = STAGE_WEIGHTS.get(s, 0)
         if s == stage:
@@ -60,6 +127,29 @@ def _estimate_eta_transcribe(duration_sec: Optional[float], last_end: float, rtf
     remaining = max(duration_sec - last_end, 0)
     rtf = max(rtf, 0.1)
     return int(remaining / rtf)
+
+
+def _start_keepalive(job_id: str, stage: str, interval_sec: int = 30):
+    """
+    Periodically touches the job updated_at to avoid stale cleanup during long operations (e.g. model load).
+    Uses a separate session per tick for thread safety.
+    """
+    stop_event = threading.Event()
+
+    def _run():
+        while not stop_event.wait(interval_sec):
+            try:
+                with SessionLocal() as sess:
+                    update_job(sess, job_id, stage=stage)
+            except Exception as exc:
+                LOGGER.warning("Job %s: keepalive tick failed: %s", job_id, exc)
+
+    thread = threading.Thread(target=_run, daemon=True)
+    thread.start()
+
+    def _stop():
+        stop_event.set()
+    return _stop
 
 
 def _summarize_chunked(text: str, params: Dict, segments: List[Dict]) -> str:
@@ -235,6 +325,13 @@ def audio_job(self, job_id: str, user_id: str, params: Dict) -> str:
             update_job(session, job_id, status="running", stage="audio_preprocess", started_at=datetime.utcnow())
             audio_path = params["input_path"]
             preset = PRESETS.get(params.get("preset") or "balanced", PRESETS["balanced"])
+            LOGGER.info(
+                "Job %s: Starting audio preprocess. input=%s preset=%s loudnorm=%s",
+                job_id,
+                audio_path,
+                params.get("preset") or "balanced",
+                preset.get("loudnorm", False),
+            )
             wav_path, duration_sec = transcriber.convert_to_wav(
                 audio_path,
                 model=params.get("asr_model", "whisper-tiny"),
@@ -242,8 +339,15 @@ def audio_job(self, job_id: str, user_id: str, params: Dict) -> str:
             )
             params["duration_sec"] = duration_sec
             job.params_json = params
-
-            update_job(session, job_id, stage="transcribing", progress=25)
+            update_job(session, job_id, stage="audio_preprocess", progress=_calc_progress("audio_preprocess", 1.0))
+            LOGGER.info(
+                "Job %s: Audio converted to wav=%s, duration=%.2fs",
+                job_id,
+                wav_path,
+                duration_sec or 0,
+            )
+            estimated_eta = _estimate_eta_transcribe(duration_sec, 0, params.get("rtf", 0.5) or 0.5)
+            update_job(session, job_id, stage="loading_model", progress=_calc_progress("loading_model", 0.05), eta_seconds=estimated_eta)
             
             # Определяем движок ASR
             asr_engine = params.get("asr_engine", "auto")
@@ -257,6 +361,17 @@ def audio_job(self, job_id: str, user_id: str, params: Dict) -> str:
                 if preset.get("vad_filter") is not None:
                     LOGGER.warning("Job %s: vad_filter не поддерживается в openai-whisper, игнорируется", job_id)
                 vad_filter_value = None
+            LOGGER.info(
+                "Job %s: Transcribing start model=%s engine=%s language=%s vad_filter=%s beam=%s temp=%s diarization=%s",
+                job_id,
+                params.get("asr_model", "whisper-tiny"),
+                asr_engine,
+                params.get("language"),
+                vad_filter_value,
+                preset.get("beam_size"),
+                preset.get("temperature"),
+                params.get("enable_diarization", True),
+            )
             
             # Callback для обновления прогресса (для faster-whisper)
             def progress_callback(inner_progress: int, last_segment_end: float):
@@ -267,19 +382,35 @@ def audio_job(self, job_id: str, user_id: str, params: Dict) -> str:
                     eta = _estimate_eta_transcribe(duration_sec, last_segment_end, params.get("rtf", 0.5) or 0.5)
                     update_job(session, job_id, stage="transcribing", progress=pct, eta_seconds=eta)
             
-            transcription = transcriber.transcribe(
-                wav_path,
-                model=params.get("asr_model", "whisper-tiny"),
-                asr_engine=asr_engine,
-                language=params.get("language"),
-                beam_size=preset.get("beam_size"),
-                temperature=preset.get("temperature"),
-                vad_filter=vad_filter_value,
-                no_speech_threshold=params.get("no_speech_threshold"),
-                enable_diarization=params.get("enable_diarization", True),
-                task=params.get("task"),
-                progress_callback=progress_callback if asr_engine in ("faster_whisper", "auto") else None,
+            stop_keepalive = _start_keepalive(job_id, "loading_model", interval_sec=30)
+            try:
+                transcription = transcriber.transcribe(
+                    wav_path,
+                    model=params.get("asr_model", "whisper-tiny"),
+                    asr_engine=asr_engine,
+                    language=params.get("language"),
+                    beam_size=preset.get("beam_size"),
+                    temperature=preset.get("temperature"),
+                    vad_filter=vad_filter_value,
+                    no_speech_threshold=params.get("no_speech_threshold"),
+                    enable_diarization=params.get("enable_diarization", True),
+                    task=params.get("task"),
+                    progress_callback=progress_callback if asr_engine in ("faster_whisper", "auto") else None,
+                )
+            finally:
+                try:
+                    stop_keepalive()
+                except Exception:
+                    pass
+            update_job(session, job_id, stage="transcribing", progress=_calc_progress("transcribing", 0.05), eta_seconds=estimated_eta)
+            LOGGER.info(
+                "Job %s: Transcription finished. duration=%.2fs segments=%d text_chars=%d",
+                job_id,
+                transcription.get("duration_sec") or duration_sec or 0,
+                len(transcription.get("segments") or []),
+                len(transcription.get("text") or ""),
             )
+            update_job(session, job_id, stage="transcribing", progress=_calc_progress("transcribing", 1.0), eta_seconds=None)
 
             transcript_text = transcription.get("text", "")
             segments = transcription.get("segments", [])
@@ -505,4 +636,3 @@ def cleanup_expired_jobs():
     except Exception as e:
         LOGGER.error("Ошибка при очистке устаревших jobs: %s", e, exc_info=True)
         raise
-

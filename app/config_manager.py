@@ -35,6 +35,9 @@ def _normalize_config(cfg: Dict[str, Any]) -> Dict[str, Any]:
     cfg.setdefault("DEFAULT_TRANSLATION_MODE", "block")
     cfg.setdefault("MODEL_TUNING", {})
     cfg.setdefault("CUSTOM_SUMMARY_API_HEADERS", {})
+    cfg.setdefault("LOG_LEVEL", "INFO")
+    cfg.setdefault("LOG_FILE_MAX_MB", 5)
+    cfg.setdefault("LOG_BACKUP_COUNT", 5)
     return cfg
 
 

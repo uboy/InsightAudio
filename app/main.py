@@ -1,8 +1,10 @@
 import asyncio
+import gzip
 import json
 import logging
 import logging.handlers
 import os
+import shutil
 import uuid
 from datetime import datetime, timedelta
 from typing import Dict, List, Optional
@@ -47,10 +49,15 @@ REQUEST_LOG_DIR = os.path.join(LOG_DIR, "requests")
 
 
 def _configure_logging():
+    cfg = config_manager.get_config()
+    level_name = str(cfg.get("LOG_LEVEL", "INFO")).upper()
+    level = getattr(logging, level_name, logging.INFO)
     logger = logging.getLogger("insightaudio")
+    logger.setLevel(level)
     if logger.handlers:
+        for handler in logger.handlers:
+            handler.setLevel(level)
         return logger
-    logger.setLevel(logging.INFO)
     
     # Форматтер для всех логов
     formatter = logging.Formatter(
@@ -62,24 +69,34 @@ def _configure_logging():
     log_file = os.path.join(LOG_DIR, "server.log")
     file_handler = logging.handlers.RotatingFileHandler(
         log_file,
-        maxBytes=10 * 1024 * 1024,  # 10MB
-        backupCount=5,
+        maxBytes=int(cfg.get("LOG_FILE_MAX_MB", 5)) * 1024 * 1024,
+        backupCount=int(cfg.get("LOG_BACKUP_COUNT", 5)),
         encoding="utf-8"
     )
+    file_handler.setLevel(level)
     file_handler.setFormatter(formatter)
-    file_handler.setLevel(logging.INFO)
+    # Сжимаем ротации в gzip
+    def _rotator(source, dest):
+        with open(source, "rb") as f_in, gzip.open(dest, "wb") as f_out:
+            shutil.copyfileobj(f_in, f_out)
+        try:
+            os.remove(source)
+        except OSError:
+            pass
+    file_handler.rotator = _rotator
+    file_handler.namer = lambda name: f"{name}.gz"
     
     # Консольный вывод
     stream_handler = logging.StreamHandler()
     stream_handler.setFormatter(formatter)
-    stream_handler.setLevel(logging.INFO)
+    stream_handler.setLevel(level)
     
     logger.addHandler(file_handler)
     logger.addHandler(stream_handler)
     
     # Настройка логирования для других модулей
-    logging.getLogger("app").setLevel(logging.INFO)
-    logging.getLogger("celery").setLevel(logging.INFO)
+    logging.getLogger("app").setLevel(level)
+    logging.getLogger("celery").setLevel(level)
     
     return logger
 
