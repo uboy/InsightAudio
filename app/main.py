@@ -17,7 +17,7 @@ from sqlalchemy.orm import Session
 from app import config_manager, file_utils, models as model_registry, summarizer, transcriber, translator
 from app.db import SessionLocal, get_session
 from app.db_models import Job, User
-from app.job_service import build_user_job_dir, create_job, ensure_tables, get_or_create_user
+from app.job_service import build_user_job_dir, create_job, ensure_tables, get_or_create_user, update_job
 from app.tasks import audio_job, doc_job
 from app import settings_loader
 
@@ -25,6 +25,8 @@ BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 templates = Jinja2Templates(directory="app/templates")
 app = FastAPI(title="InsightAudio")
 app.mount("/static", StaticFiles(directory="app/static"), name="static")
+SERVER_STARTED_AT = datetime.utcnow()
+STALE_RUNNING_MINUTES = int(os.getenv("INSIGHT_STALE_RUNNING_MINUTES", "10"))
 
 
 def _init_dirs():
@@ -387,6 +389,7 @@ async def create_doc_job(
 @app.get("/api/jobs")
 def list_jobs(request: Request, limit: int = 50, db: Session = Depends(get_session)):
     user = _get_user(request, db)
+    _cleanup_stale_running_jobs(db)
     jobs = (
         db.execute(select(Job).where(Job.user_id == user.id).order_by(desc(Job.created_at)).limit(limit)).scalars().all()
     )
@@ -396,9 +399,29 @@ def list_jobs(request: Request, limit: int = 50, db: Session = Depends(get_sessi
 @app.get("/api/jobs/{job_id}")
 def get_job(request: Request, job_id: str, db: Session = Depends(get_session)):
     user = _get_user(request, db)
+    _cleanup_stale_running_jobs(db)
     job = db.get(Job, job_id)
     _check_owner(job, user)
     return _job_to_dict(job)
+
+
+@app.post("/api/jobs/{job_id}/cancel")
+def cancel_job(request: Request, job_id: str, db: Session = Depends(get_session)):
+    user = _get_user(request, db)
+    job = db.get(Job, job_id)
+    _check_owner(job, user)
+    if _is_terminal(job):
+        return {"status": job.status}
+    update_job(
+        db,
+        job_id,
+        status="canceled",
+        stage="canceled",
+        finished_at=datetime.utcnow(),
+        error_message="Задача отменена пользователем",
+        eta_seconds=None,
+    )
+    return {"status": "canceled"}
 
 
 @app.get("/api/jobs/{job_id}/download/{asset_name}")
@@ -477,6 +500,29 @@ def download_asset(request: Request, job_id: str, asset_name: str, db: Session =
 
 def _is_terminal(job: Job) -> bool:
     return job.status in {"success", "failed", "canceled"}
+
+
+def _cleanup_stale_running_jobs(session: Session):
+    """
+    Помечаем зависшие running-задачи как завершенные с ошибкой, если давно нет обновлений.
+    Это помогает после перезапуска сервера, когда реальные воркеры уже не исполняют задачу.
+    """
+    cutoff = datetime.utcnow() - timedelta(minutes=STALE_RUNNING_MINUTES)
+    stale_jobs = (
+        session.execute(select(Job).where(Job.status == "running", Job.updated_at < cutoff))
+        .scalars()
+        .all()
+    )
+    for job in stale_jobs:
+        update_job(
+            session,
+            job.id,
+            status="failed",
+            stage="stale_orphaned",
+            error_message=f"Задача остановлена: нет обновлений > {STALE_RUNNING_MINUTES} мин (возможно, перезапуск сервера).",
+            finished_at=datetime.utcnow(),
+            eta_seconds=None,
+        )
 
 
 @app.get("/api/jobs/{job_id}/events")

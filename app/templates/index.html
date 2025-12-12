@@ -1136,11 +1136,13 @@
         const created = formatDateTime(job.created_at);
         const started = formatDateTime(job.started_at);
         const finished = formatDateTime(job.finished_at);
+        const canCancel = !['success','failed','canceled'].includes(job.status);
+        const cancelBtn = canCancel ? `<button class="download-btn" style="margin-left:8px;" type="button" onclick="cancelJob('${job.id}')">Отменить</button>` : '';
         return `
             <div class="file-block">
                 <div><b>ID:</b> ${job.id}</div>
                 <div><b>Тип:</b> ${job.job_type}</div>
-                <div><b>Статус:</b> <span style="color:${statusColor}">${job.status}</span> · стадия: ${job.stage} · прогресс: ${job.progress}% ${eta}</div>
+                <div><b>Статус:</b> <span style="color:${statusColor}">${job.status}</span> · стадия: ${job.stage} · прогресс: ${job.progress}% ${eta} ${cancelBtn}</div>
                 <div class="small"><b>Создана:</b> ${created} · <b>Начата:</b> ${started} · <b>Завершена:</b> ${finished}</div>
                 ${manifest ? `<div style="margin-top:8px;">${manifest}</div>` : ''}
                 ${err}
@@ -1155,6 +1157,21 @@
             return;
         }
         jobsListEl.innerHTML = jobs.map(makeJobCard).join('');
+    }
+
+    async function cancelJob(jobId){
+        try{
+            const resp = await fetch(`/api/jobs/${jobId}/cancel`, {method: 'POST'});
+            if(!resp.ok){
+                showNotify('Не удалось отменить задачу', true);
+                return;
+            }
+            const data = await resp.json();
+            showNotify(`Задача ${jobId} отменена (${data.status})`, false, null, true);
+            loadJobs();
+        }catch(e){
+            showNotify('Ошибка отмены задачи: '+e.message, true);
+        }
     }
 
     async function loadJobs(){
