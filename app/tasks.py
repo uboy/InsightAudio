@@ -3,7 +3,9 @@ import json
 import logging
 import os
 import shutil
+import threading
 import traceback
+import time
 from datetime import datetime
 from typing import Dict, List, Optional
 
@@ -142,7 +144,7 @@ def _start_keepalive(job_id: str, stage: str, interval_sec: int = 30):
                 with SessionLocal() as sess:
                     update_job(sess, job_id, stage=stage)
             except Exception as exc:
-                LOGGER.warning("Job %s: keepalive tick failed: %s", job_id, exc)
+                LOGGER.debug("Job %s: keepalive tick failed: %s", job_id, exc)
 
     thread = threading.Thread(target=_run, daemon=True)
     thread.start()
@@ -150,6 +152,43 @@ def _start_keepalive(job_id: str, stage: str, interval_sec: int = 30):
     def _stop():
         stop_event.set()
     return _stop
+
+
+def _start_transcribe_heartbeat(job_id: str, duration_sec: Optional[float], stage: str = "transcribing", interval_sec: int = 15):
+    """
+    Periodically bumps progress based on elapsed/duration to show activity until real segments arrive.
+    Returns (stop_fn, bump_fn) where bump_fn keeps max progress in sync with real updates.
+    """
+    stop_event = threading.Event()
+    start_ts = time.time()
+    max_progress = 0
+
+    def bump(progress: int):
+        nonlocal max_progress
+        if progress > max_progress:
+            max_progress = progress
+
+    def _run():
+        nonlocal max_progress
+        while not stop_event.wait(interval_sec):
+            if not duration_sec or duration_sec <= 0:
+                continue
+            elapsed = time.time() - start_ts
+            inner = min(0.95, elapsed / duration_sec)  # don't reach 100% by heartbeat alone
+            progress = max(max_progress, _calc_progress(stage, inner))
+            try:
+                with SessionLocal() as sess:
+                    update_job(sess, job_id, stage=stage, progress=progress)
+            except Exception as exc:
+                LOGGER.debug("Job %s: transcribe heartbeat tick failed: %s", job_id, exc)
+            max_progress = progress
+
+    thread = threading.Thread(target=_run, daemon=True)
+    thread.start()
+
+    def _stop():
+        stop_event.set()
+    return _stop, bump
 
 
 def _summarize_chunked(text: str, params: Dict, segments: List[Dict]) -> str:
@@ -380,9 +419,12 @@ def audio_job(self, job_id: str, user_id: str, params: Dict) -> str:
                     inner_fraction = min(1.0, last_segment_end / duration_sec)
                     pct = _calc_progress("transcribing", inner_fraction)
                     eta = _estimate_eta_transcribe(duration_sec, last_segment_end, params.get("rtf", 0.5) or 0.5)
+                    heartbeat_bump(pct)
                     update_job(session, job_id, stage="transcribing", progress=pct, eta_seconds=eta)
+                    LOGGER.debug("Job %s: progress callback inner=%.3f pct=%d eta=%s", job_id, inner_fraction, pct, eta)
             
             stop_keepalive = _start_keepalive(job_id, "loading_model", interval_sec=30)
+            stop_heartbeat, heartbeat_bump = _start_transcribe_heartbeat(job_id, duration_sec)
             try:
                 transcription = transcriber.transcribe(
                     wav_path,
@@ -400,6 +442,10 @@ def audio_job(self, job_id: str, user_id: str, params: Dict) -> str:
             finally:
                 try:
                     stop_keepalive()
+                except Exception:
+                    pass
+                try:
+                    stop_heartbeat()
                 except Exception:
                     pass
             update_job(session, job_id, stage="transcribing", progress=_calc_progress("transcribing", 0.05), eta_seconds=estimated_eta)
