@@ -1,8 +1,7 @@
 # GPU-enabled Dockerfile для использования CUDA
 # Использование: docker build -f Dockerfile.gpu -t insightaudio:gpu .
-# Используем образ с cuDNN для поддержки PyTorch CUDA операций
-# Используем devel образ для полной поддержки cuDNN (включая libcudnn_ops.so)
-FROM nvidia/cuda:12.9.0-cudnn-runtime-ubuntu22.04
+# Используем образ с cuDNN9 runtime (совместим с cu12)
+FROM nvidia/cuda:12.4.1-cudnn-runtime-ubuntu22.04
 
 # Python 3.10
 RUN apt-get update && apt-get install -y --no-install-recommends \
@@ -57,4 +56,3 @@ RUN chmod +x /app/entrypoint.sh
 
 ENTRYPOINT ["/app/entrypoint.sh"]
 CMD ["python3", "-m", "uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "55667"]
-

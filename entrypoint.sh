@@ -25,4 +25,3 @@ export RESULTS_DIR=${RESULTS_DIR:-/app/results}
 export MPLCONFIGDIR=${MPLCONFIGDIR:-/tmp/mplcache}
 
 exec gosu "${APP_UID}:${APP_GID}" "$@"
-

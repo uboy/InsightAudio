@@ -7,6 +7,7 @@ services:
     environment:
       - MODEL_DIR=/models
       - CONFIG_DIR=/config
+      - LOG_LEVEL=${LOG_LEVEL:-INFO}
       - CELERY_BROKER_URL=redis://redis:6379/0
       - CELERY_RESULT_BACKEND=redis://redis:6379/0
       - LOG_DIR=/app/logs
@@ -40,6 +41,7 @@ services:
     environment:
       - MODEL_DIR=/models
       - CONFIG_DIR=/config
+      - LOG_LEVEL=${LOG_LEVEL:-INFO}
       - CELERY_BROKER_URL=redis://redis:6379/0
       - CELERY_RESULT_BACKEND=redis://redis:6379/0
       - LOG_DIR=/app/logs
@@ -49,7 +51,7 @@ services:
       - APP_GID=1000
       - LD_LIBRARY_PATH=/usr/local/lib/python3.10/dist-packages/ctranslate2.libs:/usr/local/nvidia/lib:/usr/local/nvidia/lib64
 
-    command: celery -A app.celery_app.celery_app worker --loglevel=INFO -P solo
+    command: celery -A app.celery_app.celery_app worker --loglevel=${LOG_LEVEL:-INFO} -P solo
     volumes:
       - ./models:/models
       - ./config:/config

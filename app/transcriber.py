@@ -130,6 +130,14 @@ def transcribe(
     """
     import logging
     logger = logging.getLogger("insightaudio.transcriber")
+    try:
+        cfg = config_manager.get_config()
+        lvl = getattr(logging, str(cfg.get("LOG_LEVEL", "INFO")).upper(), logging.INFO)
+        logger.setLevel(lvl)
+        for h in logger.handlers:
+            h.setLevel(lvl)
+    except Exception:
+        pass
     file_hash = _get_file_hash(input_path)
     
     # Определяем движок для использования
@@ -406,7 +414,9 @@ def transcribe_with_faster_whisper(
     Поддерживает vad_filter и прогресс через callback.
     """
     import logging
+    import time
     logger = logging.getLogger("insightaudio.transcriber")
+    start_ts = time.time()
     
     try:
         from faster_whisper import WhisperModel
@@ -439,6 +449,7 @@ def transcribe_with_faster_whisper(
             compute_type=compute_type,
             download_root=cache_dir,
         )
+        logger.info("Модель Faster-Whisper '%s' загружена за %.1fs", whisper_name, time.time() - start_ts)
     except Exception as cudnn_error:
         error_msg = str(cudnn_error).lower()
         if "cudnn" in error_msg or "libcudnn" in error_msg or "invalid handle" in error_msg:
@@ -453,6 +464,7 @@ def transcribe_with_faster_whisper(
                 download_root=cache_dir,
             )
         else:
+            logger.error("Сбой загрузки модели faster-whisper: %s", cudnn_error, exc_info=True)
             raise
     
     # Формируем параметры для transcribe
@@ -467,14 +479,18 @@ def transcribe_with_faster_whisper(
         transcribe_kwargs["vad_filter"] = vad_filter
     if no_speech_threshold is not None:
         transcribe_kwargs["no_speech_threshold"] = no_speech_threshold
+    logger.debug("Параметры инференса: %s", transcribe_kwargs)
     
     # Выполняем транскрипцию с поддержкой прогресса
     segments = []
     last_progress_time = 0
-    import time
+    last_log_time = time.time()
+    first_segment_deadline = start_ts + 60  # если нет сегментов за 60с, считаем зависанием
     
     try:
+        logger.info("Старт инференса faster-whisper '%s' device=%s", whisper_name, device)
         segments_generator, info = whisper_model.transcribe(audio_path, **transcribe_kwargs)
+        logger.debug("Получен генератор сегментов, info=%s", info)
     except Exception as cudnn_runtime_err:
         err_text = str(cudnn_runtime_err).lower()
         if "cudnn" in err_text or "sublibrary_version_mismatch" in err_text or "cudnn_status" in err_text:
@@ -489,7 +505,9 @@ def transcribe_with_faster_whisper(
                 download_root=cache_dir,
             )
             segments_generator, info = whisper_model.transcribe(audio_path, **transcribe_kwargs)
+            logger.info("Повторный старт инференса на CPU для '%s'", whisper_name)
         else:
+            logger.error("Сбой инференса faster-whisper: %s", cudnn_runtime_err, exc_info=True)
             raise
     
     # Обрабатываем сегменты с обновлением прогресса
@@ -511,6 +529,20 @@ def transcribe_with_faster_whisper(
                 except Exception as e:
                     logger.warning("Ошибка в progress_callback: %s", e)
                 last_progress_time = current_time
+        # Периодический лог каждые 30 секунд
+        now = time.time()
+        if now - last_log_time >= 30:
+            logger.info(
+                "Инференс faster-whisper '%s': сегментов=%d, last_end=%.1fs, elapsed=%.1fs",
+                whisper_name,
+                len(segments),
+                segment.end,
+                now - start_ts,
+            )
+            last_log_time = now
+        if len(segments) == 0 and now >= first_segment_deadline:
+            logger.error("Нет ни одного сегмента за 60с инференса '%s' — вероятный завис", whisper_name)
+            raise RuntimeError("Faster-whisper inference produced no segments in 60s; aborting")
     
     # Форматируем сегменты
     formatted_segments = [
@@ -523,6 +555,12 @@ def transcribe_with_faster_whisper(
     transcript_text = _format_segments(formatted_segments)
     transcript_data = {"text": transcript_text, "segments": formatted_segments, "duration_sec": duration_sec}
     _save_transcript_cache(cache_key, transcript_data)
+    logger.info(
+        "Инференс faster-whisper завершён: сегментов=%d, текст=%d символов, elapsed=%.1fs",
+        len(formatted_segments),
+        len(transcript_text),
+        time.time() - start_ts,
+    )
     return transcript_data
 
 

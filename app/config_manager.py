@@ -5,7 +5,12 @@ from typing import Any, Dict
 from app import settings_loader
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
-CONFIG_DIR = os.path.abspath(os.path.join(BASE_DIR, "..", "config"))
+# Allow overriding config path via env CONFIG_DIR (useful when mounted as /config in containers)
+_env_config_dir = os.environ.get("CONFIG_DIR")
+if _env_config_dir:
+    CONFIG_DIR = os.path.abspath(_env_config_dir)
+else:
+    CONFIG_DIR = os.path.abspath(os.path.join(BASE_DIR, "..", "config"))
 CONFIG_FILE = os.path.join(CONFIG_DIR, "config.json")
 PATH_KEYS = (
     "MODEL_DIR",
@@ -38,6 +43,9 @@ def _normalize_config(cfg: Dict[str, Any]) -> Dict[str, Any]:
     cfg.setdefault("LOG_LEVEL", "INFO")
     cfg.setdefault("LOG_FILE_MAX_MB", 5)
     cfg.setdefault("LOG_BACKUP_COUNT", 5)
+    cfg.setdefault("ASR_LOAD_HEARTBEAT_SEC", 20)
+    cfg.setdefault("ASR_TRANSCRIBE_HEARTBEAT_SEC", 20)
+    cfg.setdefault("ASR_TIMEOUT_SECONDS", 1200)  # safety timeout for model load/transcription
     return cfg
 
 
@@ -61,7 +69,23 @@ def get_config():
     ensure_config()
     with open(CONFIG_FILE, "r", encoding="utf-8") as f:
         cfg = json.load(f)
-    return _normalize_config(cfg)
+    # Поддерживаем оба формата: плоский и с ключом "default_config"
+    if isinstance(cfg, dict) and "default_config" in cfg and isinstance(cfg["default_config"], dict):
+        cfg = cfg["default_config"]
+    cfg = _normalize_config(cfg)
+    # Env overrides for quick changes without editing files
+    env_level = os.getenv("LOG_LEVEL") or os.getenv("INSIGHT_LOG_LEVEL")
+    if env_level:
+        cfg["LOG_LEVEL"] = env_level
+    env_timeout = os.getenv("INSIGHT_ASR_TIMEOUT_SECONDS")
+    if env_timeout and env_timeout.isdigit():
+        cfg["ASR_TIMEOUT_SECONDS"] = int(env_timeout)
+    # Path overrides from env (for container mounts)
+    for key in ("MODEL_DIR", "CONFIG_DIR", "RESULTS_DIR", "LOG_DIR"):
+        env_val = os.getenv(key)
+        if env_val:
+            cfg[key] = _normalize_path(env_val)
+    return cfg
 
 def set_config(new_cfg: dict):
     """Обновляет конфиг."""

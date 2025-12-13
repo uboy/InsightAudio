@@ -1044,12 +1044,25 @@
     }
     
     // Обработчик для выбора движка ASR
+    function enforceAsrCompatibility() {
+        if (!asrEngineSelect) return;
+        const modelSelect = document.getElementById("transcribe_model");
+        const modelName = modelSelect ? modelSelect.value : "";
+        const engine = asrEngineSelect.value;
+        // faster-whisper модели нельзя запускать через openai_whisper
+        if (modelName.startsWith("faster-whisper") && engine === "openai_whisper") {
+            asrEngineSelect.value = "faster_whisper";
+            showNotify("Для faster-whisper выберите движок Faster-Whisper или Auto", true);
+        }
+    }
+
     function updateAsrEngineUI() {
         if (!asrEngineSelect) return;
         
         const engine = asrEngineSelect.value;
         const modelSelect = document.getElementById("transcribe_model");
         const modelName = modelSelect ? modelSelect.value : "";
+        enforceAsrCompatibility();
         
         // Обновляем подсказку
         if (asrEngineHint) {
@@ -1103,16 +1116,23 @@
         // Также обновляем при изменении модели
         const transcribeSelect = document.getElementById("transcribe_model");
         if (transcribeSelect) {
-            transcribeSelect.addEventListener("change", updateAsrEngineUI);
+            transcribeSelect.addEventListener("change", () => {
+                enforceAsrCompatibility();
+                updateAsrEngineUI();
+            });
         }
         // Вызываем при загрузке
-        setTimeout(updateAsrEngineUI, 100);
+        setTimeout(() => {
+            enforceAsrCompatibility();
+            updateAsrEngineUI();
+        }, 100);
     }
 
     function formatDateTime(value){
         if(!value) return '—';
         try {
             const d = new Date(value);
+            const tz = Intl.DateTimeFormat().resolvedOptions().timeZone;
             return new Intl.DateTimeFormat(undefined, {
                 year: 'numeric',
                 month: '2-digit',
@@ -1120,6 +1140,8 @@
                 hour: '2-digit',
                 minute: '2-digit',
                 second: '2-digit',
+                hourCycle: 'h23',
+                timeZone: tz,
                 timeZoneName: 'short'
             }).format(d);
         } catch(e){

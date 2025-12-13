@@ -19,6 +19,8 @@ celery_app.conf.update(
     worker_prefetch_multiplier=1,
     task_acks_late=True,
     broker_transport_options={"visibility_timeout": 3600},
+    worker_hijack_root_logger=False,  # keep our logging handlers (file/stdout)
+    worker_log_color=False,
     beat_schedule={
         "cleanup-expired-jobs": {
             "task": "app.tasks.cleanup_expired_jobs",
@@ -26,4 +28,3 @@ celery_app.conf.update(
         }
     },
 )
-

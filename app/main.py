@@ -6,7 +6,7 @@ import logging.handlers
 import os
 import shutil
 import uuid
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from typing import Dict, List, Optional
 
 from fastapi import Depends, FastAPI, File, Form, HTTPException, Query, Request, UploadFile
@@ -28,7 +28,8 @@ templates = Jinja2Templates(directory="app/templates")
 app = FastAPI(title="InsightAudio")
 app.mount("/static", StaticFiles(directory="app/static"), name="static")
 SERVER_STARTED_AT = datetime.utcnow()
-STALE_RUNNING_MINUTES = int(os.getenv("INSIGHT_STALE_RUNNING_MINUTES", "10"))
+# default extended to avoid false positives on long model loads; can override via env
+STALE_RUNNING_MINUTES = int(os.getenv("INSIGHT_STALE_RUNNING_MINUTES", "60"))
 
 
 def _init_dirs():
@@ -54,10 +55,6 @@ def _configure_logging():
     level = getattr(logging, level_name, logging.INFO)
     logger = logging.getLogger("insightaudio")
     logger.setLevel(level)
-    if logger.handlers:
-        for handler in logger.handlers:
-            handler.setLevel(level)
-        return logger
     
     # Форматтер для всех логов
     formatter = logging.Formatter(
@@ -67,37 +64,57 @@ def _configure_logging():
     
     # Ротация по размеру файла (10MB, до 5 файлов)
     log_file = os.path.join(LOG_DIR, "server.log")
-    file_handler = logging.handlers.RotatingFileHandler(
-        log_file,
-        maxBytes=int(cfg.get("LOG_FILE_MAX_MB", 5)) * 1024 * 1024,
-        backupCount=int(cfg.get("LOG_BACKUP_COUNT", 5)),
-        encoding="utf-8"
-    )
-    file_handler.setLevel(level)
-    file_handler.setFormatter(formatter)
-    # Сжимаем ротации в gzip
-    def _rotator(source, dest):
-        with open(source, "rb") as f_in, gzip.open(dest, "wb") as f_out:
-            shutil.copyfileobj(f_in, f_out)
-        try:
-            os.remove(source)
-        except OSError:
-            pass
-    file_handler.rotator = _rotator
-    file_handler.namer = lambda name: f"{name}.gz"
+    existing_file = next((h for h in logger.handlers if isinstance(h, logging.handlers.RotatingFileHandler)), None)
+    if existing_file:
+        existing_file.setLevel(level)
+        existing_file.setFormatter(formatter)
+        file_handler = existing_file
+    else:
+        file_handler = logging.handlers.RotatingFileHandler(
+            log_file,
+            maxBytes=int(cfg.get("LOG_FILE_MAX_MB", 5)) * 1024 * 1024,
+            backupCount=int(cfg.get("LOG_BACKUP_COUNT", 5)),
+            encoding="utf-8"
+        )
+        file_handler.setLevel(level)
+        file_handler.setFormatter(formatter)
+        # Сжимаем ротации в gzip
+        def _rotator(source, dest):
+            with open(source, "rb") as f_in, gzip.open(dest, "wb") as f_out:
+                shutil.copyfileobj(f_in, f_out)
+            try:
+                os.remove(source)
+            except OSError:
+                pass
+        file_handler.rotator = _rotator
+        file_handler.namer = lambda name: f"{name}.gz"
+        logger.addHandler(file_handler)
     
     # Консольный вывод
-    stream_handler = logging.StreamHandler()
-    stream_handler.setFormatter(formatter)
-    stream_handler.setLevel(level)
+    existing_stream = next((h for h in logger.handlers if isinstance(h, logging.StreamHandler)), None)
+    if existing_stream:
+        existing_stream.setLevel(level)
+        existing_stream.setFormatter(formatter)
+    else:
+        stream_handler = logging.StreamHandler()
+        stream_handler.setFormatter(formatter)
+        stream_handler.setLevel(level)
+        logger.addHandler(stream_handler)
     
-    logger.addHandler(file_handler)
-    logger.addHandler(stream_handler)
+    logger.propagate = True
     
     # Настройка логирования для других модулей
     logging.getLogger("app").setLevel(level)
     logging.getLogger("celery").setLevel(level)
-    
+
+    # Дублируем хендлеры на root, чтобы улавливать всё, даже если сторонние логеры не наследуют insightaudio
+    root = logging.getLogger()
+    root.setLevel(level)
+    for h in logger.handlers:
+        if h not in root.handlers:
+            root.addHandler(h)
+
+    logger.info("Logging configured level=%s file=%s", level_name, log_file)
     return logger
 
 
@@ -122,6 +139,7 @@ _setup_whisper_cache()
 @app.on_event("startup")
 def _startup():
     ensure_tables()
+    _reset_inflight_jobs()
 
 
 def _cleanup_old_temp_files():
@@ -313,6 +331,13 @@ def _check_owner(job: Job, user: User):
 
 
 def _job_to_dict(job: Job) -> Dict:
+    def _iso(dt: Optional[datetime]) -> Optional[str]:
+        if not dt:
+            return None
+        if dt.tzinfo is None:
+            dt = dt.replace(tzinfo=timezone.utc)
+        return dt.astimezone(timezone.utc).isoformat().replace("+00:00", "Z")
+
     return {
         "id": job.id,
         "user_id": job.user_id,
@@ -321,10 +346,10 @@ def _job_to_dict(job: Job) -> Dict:
         "stage": job.stage,
         "progress": job.progress,
         "eta_seconds": job.eta_seconds,
-        "created_at": job.created_at.isoformat() if job.created_at else None,
-        "started_at": job.started_at.isoformat() if job.started_at else None,
-        "updated_at": job.updated_at.isoformat() if job.updated_at else None,
-        "finished_at": job.finished_at.isoformat() if job.finished_at else None,
+        "created_at": _iso(job.created_at),
+        "started_at": _iso(job.started_at),
+        "updated_at": _iso(job.updated_at),
+        "finished_at": _iso(job.finished_at),
         "params": job.params_json,
         "error_message": job.error_message,
         "error_traceback": job.error_traceback,
@@ -560,6 +585,28 @@ async def job_events(request: Request, job_id: str):
             await asyncio.sleep(1)
 
     return StreamingResponse(event_stream(), media_type="text/event-stream")
+
+
+def _reset_inflight_jobs():
+    """При старте помечаем зависшие незавершённые jobs как failed после рестарта."""
+    with SessionLocal() as session:
+        stuck = (
+            session.execute(select(Job).where(Job.status.in_(["running", "queued", "pending"])))
+            .scalars()
+            .all()
+        )
+        for job in stuck:
+            update_job(
+                session,
+                job.id,
+                status="failed",
+                stage="failed",
+                progress=100,
+                error_message="Сервис перезапущен: незавершённая задача остановлена",
+                finished_at=datetime.utcnow(),
+                eta_seconds=None,
+            )
+            ROOT_LOGGER.warning("Job %s marked failed on startup (previous status=%s)", job.id, job.status)
 
 
 @app.get("/list_models")

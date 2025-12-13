@@ -10,6 +10,7 @@ from datetime import datetime
 from typing import Dict, List, Optional
 
 from app import config_manager, summarizer, transcriber, translator
+from app.models import is_model_downloaded
 from app.celery_app import celery_app
 from app.job_service import (
     build_user_job_dir,
@@ -21,58 +22,75 @@ from app.db import session_scope
 from app.db_models import Job
 import json
 from app.db import SessionLocal
+from concurrent.futures import ThreadPoolExecutor, TimeoutError as FuturesTimeout
 
 
 def _configure_worker_logging() -> logging.Logger:
     """Ensure celery workers have the same logging config as the web app."""
     cfg = config_manager.get_config()
-    level_name = str(cfg.get("LOG_LEVEL", "INFO")).upper()
-    level = getattr(logging, level_name, logging.INFO)
+    level_name = str(cfg.get("LOG_LEVEL", "DEBUG")).upper()
+    level = getattr(logging, level_name, logging.DEBUG)
     log_dir = os.path.abspath(cfg.get("LOG_DIR", "./logs"))
     os.makedirs(log_dir, exist_ok=True)
     log_file = os.path.join(log_dir, "server.log")
 
     logger = logging.getLogger("insightaudio")
     logger.setLevel(level)
-    if logger.handlers:
-        for h in logger.handlers:
-            h.setLevel(level)
-        return logger
 
     formatter = logging.Formatter(
         "%(asctime)s [%(levelname)s] %(name)s:%(funcName)s:%(lineno)d - %(message)s",
         datefmt="%Y-%m-%d %H:%M:%S",
     )
-    file_handler = logging.handlers.RotatingFileHandler(
-        log_file,
-        maxBytes=int(cfg.get("LOG_FILE_MAX_MB", 5)) * 1024 * 1024,
-        backupCount=int(cfg.get("LOG_BACKUP_COUNT", 5)),
-        encoding="utf-8",
-    )
-    file_handler.setLevel(level)
-    file_handler.setFormatter(formatter)
+    existing_file = next((h for h in logger.handlers if isinstance(h, logging.handlers.RotatingFileHandler)), None)
+    if existing_file:
+        existing_file.setLevel(level)
+        existing_file.setFormatter(formatter)
+        file_handler = existing_file
+    else:
+        file_handler = logging.handlers.RotatingFileHandler(
+            log_file,
+            maxBytes=int(cfg.get("LOG_FILE_MAX_MB", 5)) * 1024 * 1024,
+            backupCount=int(cfg.get("LOG_BACKUP_COUNT", 5)),
+            encoding="utf-8",
+        )
+        file_handler.setLevel(level)
+        file_handler.setFormatter(formatter)
 
-    def _rotator(source, dest):
-        with open(source, "rb") as f_in, gzip.open(dest, "wb") as f_out:
-            shutil.copyfileobj(f_in, f_out)
-        try:
-            os.remove(source)
-        except OSError:
-            pass
+        def _rotator(source, dest):
+            with open(source, "rb") as f_in, gzip.open(dest, "wb") as f_out:
+                shutil.copyfileobj(f_in, f_out)
+            try:
+                os.remove(source)
+            except OSError:
+                pass
 
-    file_handler.rotator = _rotator
-    file_handler.namer = lambda name: f"{name}.gz"
+        file_handler.rotator = _rotator
+        file_handler.namer = lambda name: f"{name}.gz"
+        logger.addHandler(file_handler)
 
-    stream_handler = logging.StreamHandler()
-    stream_handler.setFormatter(formatter)
-    stream_handler.setLevel(level)
+    existing_stream = next((h for h in logger.handlers if isinstance(h, logging.StreamHandler)), None)
+    if existing_stream:
+        existing_stream.setLevel(level)
+        existing_stream.setFormatter(formatter)
+    else:
+        stream_handler = logging.StreamHandler()
+        stream_handler.setFormatter(formatter)
+        stream_handler.setLevel(level)
+        logger.addHandler(stream_handler)
 
-    logger.addHandler(file_handler)
-    logger.addHandler(stream_handler)
+    logger.propagate = True
 
     logging.getLogger("app").setLevel(level)
     logging.getLogger("celery").setLevel(level)
 
+    # Поднимаем уровень и хендлеры на root, чтобы забирать все логи Celery/3rd party
+    root = logging.getLogger()
+    root.setLevel(level)
+    for h in logger.handlers:
+        if h not in root.handlers:
+            root.addHandler(h)
+
+    logger.info("Worker logging configured level=%s file=%s", level_name, log_file)
     return logger
 
 
@@ -144,7 +162,7 @@ def _start_keepalive(job_id: str, stage: str, interval_sec: int = 30):
                 with SessionLocal() as sess:
                     update_job(sess, job_id, stage=stage)
             except Exception as exc:
-                LOGGER.debug("Job %s: keepalive tick failed: %s", job_id, exc)
+                LOGGER.warning("Job %s: keepalive tick failed: %s", job_id, exc)
 
     thread = threading.Thread(target=_run, daemon=True)
     thread.start()
@@ -180,8 +198,9 @@ def _start_transcribe_heartbeat(job_id: str, duration_sec: Optional[float], stag
                 with SessionLocal() as sess:
                     update_job(sess, job_id, stage=stage, progress=progress)
             except Exception as exc:
-                LOGGER.debug("Job %s: transcribe heartbeat tick failed: %s", job_id, exc)
+                LOGGER.warning("Job %s: transcribe heartbeat tick failed: %s", job_id, exc)
             max_progress = progress
+            LOGGER.debug("Job %s: heartbeat tick progress=%d", job_id, progress)
 
     thread = threading.Thread(target=_run, daemon=True)
     thread.start()
@@ -386,7 +405,11 @@ def audio_job(self, job_id: str, user_id: str, params: Dict) -> str:
                 duration_sec or 0,
             )
             estimated_eta = _estimate_eta_transcribe(duration_sec, 0, params.get("rtf", 0.5) or 0.5)
+            cfg = config_manager.get_config()
+            load_interval = int(cfg.get("ASR_LOAD_HEARTBEAT_SEC", 20))
+            transcribe_interval = int(cfg.get("ASR_TRANSCRIBE_HEARTBEAT_SEC", 20))
             update_job(session, job_id, stage="loading_model", progress=_calc_progress("loading_model", 0.05), eta_seconds=estimated_eta)
+            LOGGER.info("Job %s: loading_model heartbeat interval=%ss transcribe heartbeat interval=%ss", job_id, load_interval, transcribe_interval)
             
             # Определяем движок ASR
             asr_engine = params.get("asr_engine", "auto")
@@ -412,6 +435,27 @@ def audio_job(self, job_id: str, user_id: str, params: Dict) -> str:
                 params.get("enable_diarization", True),
             )
             
+            # Если модель faster-whisper не скачана, не ждём бесконечной загрузки
+            asr_model = params.get("asr_model", "whisper-tiny")
+            downloaded = is_model_downloaded(asr_model, "transcribe")
+            LOGGER.info("Job %s: ASR model %s downloaded=%s", job_id, asr_model, downloaded)
+            if asr_engine == "faster_whisper" and asr_model.startswith("faster-whisper") and not downloaded:
+                msg = (
+                    f"ASR model {asr_model} not downloaded. "
+                    "Download it via UI/CLI or choose a smaller model."
+                )
+                LOGGER.error("Job %s: %s", job_id, msg)
+                update_job(
+                    session,
+                    job_id,
+                    status="failed",
+                    stage="failed",
+                    progress=100,
+                    error_message=msg,
+                    finished_at=datetime.utcnow(),
+                )
+                return job_id
+            
             # Callback для обновления прогресса (для faster-whisper)
             def progress_callback(inner_progress: int, last_segment_end: float):
                 """Обновляет прогресс транскрипции"""
@@ -423,23 +467,35 @@ def audio_job(self, job_id: str, user_id: str, params: Dict) -> str:
                     update_job(session, job_id, stage="transcribing", progress=pct, eta_seconds=eta)
                     LOGGER.debug("Job %s: progress callback inner=%.3f pct=%d eta=%s", job_id, inner_fraction, pct, eta)
             
-            stop_keepalive = _start_keepalive(job_id, "loading_model", interval_sec=30)
-            stop_heartbeat, heartbeat_bump = _start_transcribe_heartbeat(job_id, duration_sec)
+            stop_keepalive = _start_keepalive(job_id, "loading_model", interval_sec=load_interval)
+            stop_heartbeat, heartbeat_bump = _start_transcribe_heartbeat(job_id, duration_sec, interval_sec=transcribe_interval)
+            timeout_sec = int(cfg.get("ASR_TIMEOUT_SECONDS", 1200))
+            executor = ThreadPoolExecutor(max_workers=1)
+            future = executor.submit(
+                transcriber.transcribe,
+                wav_path,
+                params.get("asr_model", "whisper-tiny"),
+                asr_engine=asr_engine,
+                language=params.get("language"),
+                beam_size=preset.get("beam_size"),
+                temperature=preset.get("temperature"),
+                vad_filter=vad_filter_value,
+                no_speech_threshold=params.get("no_speech_threshold"),
+                enable_diarization=params.get("enable_diarization", True),
+                task=params.get("task"),
+                progress_callback=progress_callback if asr_engine in ("faster_whisper", "auto") else None,
+            )
             try:
-                transcription = transcriber.transcribe(
-                    wav_path,
-                    model=params.get("asr_model", "whisper-tiny"),
-                    asr_engine=asr_engine,
-                    language=params.get("language"),
-                    beam_size=preset.get("beam_size"),
-                    temperature=preset.get("temperature"),
-                    vad_filter=vad_filter_value,
-                    no_speech_threshold=params.get("no_speech_threshold"),
-                    enable_diarization=params.get("enable_diarization", True),
-                    task=params.get("task"),
-                    progress_callback=progress_callback if asr_engine in ("faster_whisper", "auto") else None,
-                )
+                transcription = future.result(timeout=timeout_sec)
+            except FuturesTimeout:
+                future.cancel()
+                LOGGER.error("Job %s: Transcription timed out after %ss", job_id, timeout_sec)
+                raise RuntimeError(f"ASR timeout after {timeout_sec}s (model load/inference took too long)")
             finally:
+                try:
+                    executor.shutdown(wait=False, cancel_futures=True)
+                except Exception:
+                    pass
                 try:
                     stop_keepalive()
                 except Exception:
@@ -481,8 +537,6 @@ def audio_job(self, job_id: str, user_id: str, params: Dict) -> str:
                     update_job(session, job_id, stage="reviewing", progress=_calc_progress("reviewing"))
                     
                     # Используем промпт из параметров, конфига или стандартный промпт для ревью
-                    from app import config_manager
-                    cfg = config_manager.get_config()
                     review_prompt_template = params.get("review_prompt") or cfg.get("REVIEW_PROMPT", 
                         "Проверь и улучши следующий пересказ. Исправь ошибки, улучши структуру, добавь недостающие детали, если они важны. Сохрани формат Markdown.\n\nПересказ:\n")
                     

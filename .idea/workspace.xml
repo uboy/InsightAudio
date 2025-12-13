@@ -4,7 +4,7 @@
     <option name="autoReloadType" value="SELECTIVE" />
   </component>
   <component name="ChangeListManager">
-    <list default="true" id="27c1b00d-8878-4a90-9c2a-cb5b391cddc9" name="Changes" comment="Add logging config/rotation, improve audio job progress visibility, and auto-cancel stale jobs" />
+    <list default="true" id="27c1b00d-8878-4a90-9c2a-cb5b391cddc9" name="Changes" comment="Improve ASR heartbeat/logging and use browser timezone for timestamps" />
     <option name="SHOW_DIALOG" value="false" />
     <option name="HIGHLIGHT_CONFLICTS" value="true" />
     <option name="HIGHLIGHT_NON_ACTIVE_CHANGELIST" value="false" />
@@ -73,6 +73,8 @@
     <MESSAGE value="fixing model download" />
     <MESSAGE value="add cancel jobs functionality" />
     <MESSAGE value="Add logging config/rotation, improve audio job progress visibility, and auto-cancel stale jobs" />
-    <option name="LAST_COMMIT_MESSAGE" value="Add logging config/rotation, improve audio job progress visibility, and auto-cancel stale jobs" />
+    <MESSAGE value="fix timezone for user, add debug more logs" />
+    <MESSAGE value="Improve ASR heartbeat/logging and use browser timezone for timestamps" />
+    <option name="LAST_COMMIT_MESSAGE" value="Improve ASR heartbeat/logging and use browser timezone for timestamps" />
   </component>
 </project>
