@@ -586,6 +586,14 @@ def convert_to_wav(
         (wav_path, duration_sec)
     """
     base, ext = os.path.splitext(input_path)
+    config = config_manager.get_config()
+    max_duration = config.get("MAX_AUDIO_DURATION_SEC")
+    pre_duration = _probe_duration_sec(input_path)
+    if pre_duration and max_duration and pre_duration > float(max_duration):
+        raise RuntimeError(
+            f"Длительность файла {pre_duration:.0f}s превышает лимит {max_duration}s. "
+            "Выберите более короткий файл или повысьте MAX_AUDIO_DURATION_SEC в конфиге."
+        )
     file_hash = file_hash or _get_file_hash(input_path)
     cache_key = f"{file_hash}_{model}_{'loudnorm' if loudnorm else 'noloudnorm'}"
     
@@ -634,7 +642,21 @@ def convert_to_wav(
     if loudnorm:
         cmd.extend(["-af", "loudnorm=I=-16:LRA=11:TP=-1.5"])
     cmd.append(wav_path)
-    subprocess.run(cmd, check=True)
+    ffmpeg_timeout = int(config.get("FFMPEG_TIMEOUT_SECONDS", 180) or 180)
+    # Добавляем флаги безопасности, чтобы ffmpeg не зависал на stdin и падал при ошибках
+    safe_cmd = ["ffmpeg", "-nostdin", "-hide_banner", "-loglevel", "error", "-y"] + cmd[2:]
+    try:
+        subprocess.run(safe_cmd, check=True, timeout=ffmpeg_timeout, capture_output=True)
+    except subprocess.TimeoutExpired as exc:
+        try:
+            if os.path.exists(wav_path):
+                os.remove(wav_path)
+        except OSError:
+            pass
+        raise RuntimeError(f"FFmpeg превысил лимит {ffmpeg_timeout}s при конвертации") from exc
+    except subprocess.CalledProcessError as exc:
+        stderr = exc.stderr.decode("utf-8", errors="ignore") if exc.stderr else ""
+        raise RuntimeError(f"Ошибка FFmpeg: {stderr.strip() or exc}") from exc
     
     duration_sec = _probe_duration_sec(wav_path) or 0.0
     

@@ -371,6 +371,31 @@ def _enforce_size_limit(path: str):
         raise HTTPException(status_code=413, detail=f"Файл превышает лимит {limit_mb} MB")
 
 
+def _parse_params_json(params_raw: str) -> Dict:
+    try:
+        return json.loads(params_raw or "{}")
+    except json.JSONDecodeError:
+        raise HTTPException(status_code=400, detail="params должен быть валидным JSON")
+
+
+def _create_audio_job_record(user: User, upload_file: UploadFile, params_dict: Dict, db: Session) -> str:
+    job_id = uuid.uuid4().hex
+    job_dir = build_user_job_dir(user.id, job_id)
+    saved_path = file_utils.handle_upload(upload_file, save_dir=job_dir)
+    _enforce_size_limit(saved_path)
+    job_params = dict(params_dict or {})
+    job_params.update(
+        {
+            "input_path": saved_path,
+            "original_filename": upload_file.filename,
+            "asr_model": job_params.get("asr_model") or job_params.get("transcribe_model") or "whisper-tiny",
+        }
+    )
+    job = create_job(db, user_id=user.id, job_type="audio", stage="upload_saved", params=job_params, job_id=job_id)
+    audio_job.delay(job.id, user.id, job_params)
+    return job.id
+
+
 @app.post("/api/jobs/audio")
 async def create_audio_job(
     request: Request,
@@ -379,25 +404,34 @@ async def create_audio_job(
     db: Session = Depends(get_session),
 ):
     user = _get_user(request, db)
-    try:
-        params_dict = json.loads(params or "{}")
-    except json.JSONDecodeError:
-        raise HTTPException(status_code=400, detail="params должен быть валидным JSON")
+    params_dict = _parse_params_json(params)
+    job_id = _create_audio_job_record(user, file, params_dict, db)
+    return {"job_id": job_id}
 
-    job_id = uuid.uuid4().hex
-    job_dir = build_user_job_dir(user.id, job_id)
-    saved_path = file_utils.handle_upload(file, save_dir=job_dir)
-    _enforce_size_limit(saved_path)
-    params_dict.update(
-        {
-            "input_path": saved_path,
-            "original_filename": file.filename,
-            "asr_model": params_dict.get("asr_model") or params_dict.get("transcribe_model") or "whisper-tiny",
-        }
-    )
-    job = create_job(db, user_id=user.id, job_type="audio", stage="upload_saved", params=params_dict, job_id=job_id)
-    audio_job.delay(job.id, user.id, params_dict)
-    return {"job_id": job.id}
+
+@app.post("/api/jobs/audio/batch")
+async def create_audio_jobs_batch(
+    request: Request,
+    files: List[UploadFile] = File(...),
+    params: str = Form("{}"),
+    db: Session = Depends(get_session),
+):
+    user = _get_user(request, db)
+    params_dict = _parse_params_json(params)
+    cfg = config_manager.get_config()
+    max_files = int(cfg.get("MAX_AUDIO_BATCH_FILES", 5))
+    upload_files = [f for f in files if f is not None]
+    if not upload_files:
+        raise HTTPException(status_code=400, detail="Не переданы файлы для обработки")
+    if len(upload_files) > max_files:
+        raise HTTPException(status_code=400, detail=f"Можно загрузить не более {max_files} файлов за один запрос")
+
+    job_ids: List[str] = []
+    for upload_file in upload_files:
+        job_params = dict(params_dict or {})
+        job_id = _create_audio_job_record(user, upload_file, job_params, db)
+        job_ids.append(job_id)
+    return {"job_ids": job_ids}
 
 
 @app.post("/api/jobs/doc_translate")

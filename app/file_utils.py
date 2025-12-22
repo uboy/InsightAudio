@@ -1,4 +1,5 @@
 import os
+import re
 import shutil
 import subprocess
 from datetime import datetime
@@ -28,9 +29,14 @@ def clean_filename(filename):
     """
     Очищает имя файла от лишних символов, добавляет временную метку
     """
-    base, ext = os.path.splitext(filename)
+    name = os.path.basename(filename or "upload")
+    base, ext = os.path.splitext(name)
+    # Оставляем только безопасные символы, чтобы исключить path traversal и странные юникод-символы
+    safe_base = re.sub(r"[^A-Za-z0-9._-]+", "_", base).strip("._")
+    if not safe_base:
+        safe_base = "upload"
     timestamp = datetime.now().strftime("%Y%m%d%H%M%S")
-    return f"{base}_{timestamp}{ext}"
+    return f"{safe_base}_{timestamp}{ext}"
 
 def convert_to_wav(input_path):
     """

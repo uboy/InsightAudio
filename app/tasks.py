@@ -464,7 +464,11 @@ def audio_job(self, job_id: str, user_id: str, params: Dict) -> str:
                     pct = _calc_progress("transcribing", inner_fraction)
                     eta = _estimate_eta_transcribe(duration_sec, last_segment_end, params.get("rtf", 0.5) or 0.5)
                     heartbeat_bump(pct)
-                    update_job(session, job_id, stage="transcribing", progress=pct, eta_seconds=eta)
+                    try:
+                        with SessionLocal() as progress_session:
+                            update_job(progress_session, job_id, stage="transcribing", progress=pct, eta_seconds=eta)
+                    except Exception as exc:
+                        LOGGER.debug("Job %s: progress callback update failed: %s", job_id, exc)
                     LOGGER.debug("Job %s: progress callback inner=%.3f pct=%d eta=%s", job_id, inner_fraction, pct, eta)
             
             stop_keepalive = _start_keepalive(job_id, "loading_model", interval_sec=load_interval)

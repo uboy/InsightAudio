@@ -62,6 +62,7 @@
 
 #### API Endpoints
 - `POST /api/jobs/audio` — создание задачи транскрипции аудио/видео
+- `POST /api/jobs/audio/batch` — создание нескольких задач транскрипции за один запрос (FormData: `files[]`, `params`)
 - `POST /api/jobs/doc_translate` — создание задачи перевода документа
 - `GET /api/jobs` — список задач текущего пользователя
 - `GET /api/jobs/{id}` — детали задачи
@@ -82,6 +83,7 @@
 - **Advanced параметры**: beam_size, temperature, vad_filter (только faster-whisper), no_speech_threshold, loudnorm
 - **Кэширование**: Учитывает модель, движок, язык, beam, temperature, VAD, hash файла (TTL 7 дней)
 - **Прогресс/ETA**: Честный прогресс для faster-whisper (обновление каждые ≤2 сек), RTF-based ETA
+- **Ограничения безопасности**: Лимит длительности файла (`MAX_AUDIO_DURATION_SEC`, по умолчанию 7200 секунд) и таймаут ffmpeg-конвертации (`FFMPEG_TIMEOUT_SECONDS`) защищают воркеры от зависаний и слишком длинных медиа
 
 #### Пересказ (Summary)
 - **Backend**: Ollama, llama.cpp, Custom API
@@ -109,6 +111,7 @@
 - **Path traversal protection**: Защита от `../` и других попыток доступа к файлам вне job_dir
 - **Chunked upload**: Потоковая загрузка файлов чанками (8MB) без чтения всего файла в память
 - **Size limits**: Настраиваемый лимит размера файла (`MAX_UPLOAD_MB`)
+- **Batch limits**: Количество файлов в мультизагрузке ограничено (`MAX_AUDIO_BATCH_FILES`)
 
 #### GPU поддержка
 - **CUDA**: Автоматическое определение и использование GPU если доступно

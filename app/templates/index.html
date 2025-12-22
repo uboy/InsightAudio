@@ -44,8 +44,8 @@
         <section id="audioTab" class="tab-section">
             <h2>Загрузить аудио или видео</h2>
             <form id="processForm">
-                <label for="file">Файл (аудио/видео):</label>
-                <input type="file" name="file" id="file" required accept="audio/*,video/*">
+                <label for="file">Файлы (аудио/видео):</label>
+                <input type="file" name="files" id="file" required accept="audio/*,video/*" multiple>
 
                 <div class="models-section">
                     <label for="transcribe_model">Модель транскрипции:</label>
@@ -1227,7 +1227,8 @@
     async function submitAudio(event){
         event.preventDefault();
         const fileInput = document.getElementById('file');
-        if(!fileInput.files.length){ showNotify('Выберите файл', true); return; }
+        const files = Array.from(fileInput.files || []);
+        if(!files.length){ showNotify('Выберите файл', true); return; }
         const params = {
             asr_model: document.getElementById('transcribe_model').value,
             asr_engine: asrEngineSelect ? asrEngineSelect.value : 'auto',
@@ -1250,17 +1251,42 @@
             target_language: targetLanguageAudioSelect.value,
         };
         const fd = new FormData();
-        fd.append('file', fileInput.files[0]);
+        const endpoint = files.length > 1 ? '/api/jobs/audio/batch' : '/api/jobs/audio';
+        if(files.length > 1){
+            files.forEach(f => fd.append('files', f));
+        }else{
+            fd.append('file', files[0]);
+        }
         fd.append('params', JSON.stringify(params));
         showNotify('Задача отправлена, ожидайте...', false, null, true);
-        const resp = await fetch('/api/jobs/audio', {method:'POST', body: fd});
+        const resp = await fetch(endpoint, {method:'POST', body: fd});
         if(!resp.ok){
-            showNotify('Ошибка отправки задачи', true);
+            let errorMessage = 'Ошибка отправки задачи';
+            try{
+                const err = await resp.json();
+                errorMessage = err.detail || errorMessage;
+            }catch(_){}
+            showNotify(errorMessage, true);
             return;
         }
         const data = await resp.json();
-        audioJobStatusEl.innerHTML = `<p class="small">Job ${data.job_id} создан, ждём события...</p>`;
-        trackJob(data.job_id, audioJobStatusEl);
+        if(files.length > 1){
+            if(!Array.isArray(data.job_ids)){
+                showNotify('Ошибка отправки задачи', true);
+                return;
+            }
+            audioJobStatusEl.innerHTML = '';
+            data.job_ids.forEach((id, idx) => {
+                const row = document.createElement('div');
+                row.className = 'job-status';
+                row.innerHTML = `<p class="small">Job ${id} создан (${idx + 1}/${data.job_ids.length}), ждём события...</p>`;
+                audioJobStatusEl.appendChild(row);
+                trackJob(id, row);
+            });
+        }else{
+            audioJobStatusEl.innerHTML = `<p class="small">Job ${data.job_id} создан, ждём события...</p>`;
+            trackJob(data.job_id, audioJobStatusEl);
+        }
         loadJobs();
     }
 
