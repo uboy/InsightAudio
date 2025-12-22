@@ -83,7 +83,7 @@
 - **Advanced параметры**: beam_size, temperature, vad_filter (только faster-whisper), no_speech_threshold, loudnorm
 - **Кэширование**: Учитывает модель, движок, язык, beam, temperature, VAD, hash файла (TTL 7 дней)
 - **Прогресс/ETA**: Честный прогресс для faster-whisper (обновление каждые ≤2 сек), RTF-based ETA
-- **Ограничения безопасности**: Лимит длительности файла (`MAX_AUDIO_DURATION_SEC`, по умолчанию 7200 секунд) и таймаут ffmpeg-конвертации (`FFMPEG_TIMEOUT_SECONDS`) защищают воркеры от зависаний и слишком длинных медиа
+- **Ограничения безопасности**: Лимит длительности файла (`MAX_AUDIO_DURATION_SEC`, по умолчанию 14400 секунд) и таймаут ffmpeg-конвертации (`FFMPEG_TIMEOUT_SECONDS`) защищают воркеры от зависаний и слишком длинных медиа
 
 #### Пересказ (Summary)
 - **Backend**: Ollama, llama.cpp, Custom API

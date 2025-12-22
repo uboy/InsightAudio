@@ -47,7 +47,7 @@ def _normalize_config(cfg: Dict[str, Any]) -> Dict[str, Any]:
     cfg.setdefault("ASR_TRANSCRIBE_HEARTBEAT_SEC", 20)
     cfg.setdefault("ASR_TIMEOUT_SECONDS", 1200)  # safety timeout for model load/transcription
     cfg.setdefault("MAX_AUDIO_BATCH_FILES", 5)
-    cfg.setdefault("MAX_AUDIO_DURATION_SEC", 7200)  # safety limit ~2h per file
+    cfg.setdefault("MAX_AUDIO_DURATION_SEC", 14400)  # safety limit ~4h per file
     cfg.setdefault("FFMPEG_TIMEOUT_SECONDS", 180)  # upper bound for conversion step
     return cfg
 

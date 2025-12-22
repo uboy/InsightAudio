@@ -28,6 +28,9 @@
         .notify .close-btn:hover { background: rgba(255,255,255,0.5); }
         .download-btn { background: #e09000; color: #fff; padding: 6px 16px; border-radius: 6px; font-size: 13px; margin:0 10px; cursor: pointer;}
         .download-btn:disabled { background: #aaa; cursor: not-allowed; }
+        .progress { width: 100%; background: #eee; height: 8px; border-radius: 4px; margin: 6px 0; }
+        .progress-value { background: #0059b2; height: 8px; border-radius: 4px; width: 0%; transition: width 0.2s; }
+        .file-chip { display: inline-block; background: #eef3fb; border: 1px solid #d3ddf0; color: #0f172a; padding: 4px 8px; border-radius: 12px; font-size: 12px; margin: 4px 4px 0 0; }
     </style>
 </head>
 <body>
@@ -46,6 +49,11 @@
             <form id="processForm">
                 <label for="file">Файлы (аудио/видео):</label>
                 <input type="file" name="files" id="file" required accept="audio/*,video/*" multiple>
+                <div id="selectedFiles" class="small"></div>
+                <div id="uploadProgress" class="progress" style="display:none;">
+                    <div id="uploadProgressValue" class="progress-value"></div>
+                </div>
+                <div id="uploadProgressText" class="small" style="display:none;">Загрузка...</div>
 
                 <div class="models-section">
                     <label for="transcribe_model">Модель транскрипции:</label>
@@ -196,7 +204,7 @@
                     <select id="review_prompt_template">
                         <option value="">— использовать стандартный —</option>
                         {% for tpl in config.PROMPT_TEMPLATES %}
-                        <option value="{{ tpl.id }}" data-text="{{ tpl.prompt_text|e }}">{{ tpl.title }} — {{ tpl.description }}</option>
+                        <option value="{{ tpl.id }}" data-text="{{ tpl.prompt_text|e }}" data-scope="{{ tpl.scope or 'summary' }}">{{ tpl.title }} — {{ tpl.description }}</option>
                         {% endfor %}
                     </select>
                     <label for="review_custom_prompt">Промпт для ревью пересказа:</label>
@@ -205,11 +213,16 @@
                 </div>
 
                 <div id="prompt_template_block" class="models-section">
+                    <label for="discipline_name">Название дисциплины (опционально):</label>
+                    <input type="text" id="discipline_name" placeholder="Например, Линейная алгебра">
+                    <label for="discipline_description">Краткое описание дисциплины (опционально):</label>
+                    <textarea id="discipline_description" rows="3" placeholder="Опишите фокус и специфику курса"></textarea>
+                    <div class="small">Эти поля подставляются в шаблоны {% raw %}{{НАЗВАНИЕ_ДИСЦИПЛИНЫ}}{% endraw %} и {% raw %}{{ОПИСАНИЕ_ДИСЦИПЛИНЫ}}{% endraw %}.</div>
                     <label for="prompt_template">Шаблон промпта:</label>
                     <select id="prompt_template">
                         <option value="">— выберите —</option>
                         {% for tpl in config.PROMPT_TEMPLATES %}
-                        <option value="{{ tpl.id }}" data-text="{{ tpl.prompt_text|e }}">{{ tpl.title }} — {{ tpl.description }}</option>
+                        <option value="{{ tpl.id }}" data-text="{{ tpl.prompt_text|e }}" data-scope="{{ tpl.scope or 'summary' }}">{{ tpl.title }} — {{ tpl.description }}</option>
                         {% endfor %}
                     </select>
                     <label for="custom_prompt">Промпт для текущего запуска:</label>
@@ -357,6 +370,7 @@
     const customApiManualModelsBlock = document.getElementById("custom_api_manual_models");
     const customApiModelsManualInput = document.getElementById("custom_api_models_manual");
     let customApiModelsCache = []; // Кеш моделей из пользовательского API
+    let allTranscribeModels = [];
     const transcribeSelect = document.getElementById("transcribe_model");
     const summarizeSelect = document.getElementById("summarize_model");
     const targetLanguageSelect = document.getElementById("target_language");
@@ -375,7 +389,32 @@
     const translateMetricsHint = document.getElementById("translate_metrics_hint");
     let summarizerModelMetrics = {};
     let translateModelMetrics = {};
-
+    const enableSummaryCheckbox = document.getElementById("enable_summary");
+    const enableTranslationCheckbox = document.getElementById("enable_translation");
+    const targetLanguageAudioSelect = document.getElementById("target_language_audio");
+    const audioLanguageSelect = document.getElementById("audio_language");
+    const presetSelect = document.getElementById("preset");
+    const enableDiarizationCheckbox = document.getElementById("enable_diarization");
+    const beamSizeInput = document.getElementById("beam_size");
+    const temperatureInput = document.getElementById("temperature");
+    const vadFilterSelect = document.getElementById("vad_filter");
+    const noSpeechThresholdInput = document.getElementById("no_speech_threshold");
+    const asrEngineSelect = document.getElementById("asr_engine");
+    const asrEngineHint = document.getElementById("asr_engine_hint");
+    const vadFilterBadge = document.getElementById("vad_filter_badge");
+    const vadFilterHint = document.getElementById("vad_filter_hint");
+    const audioJobStatusEl = document.getElementById("audioJobStatus");
+    const docJobStatusEl = document.getElementById("docJobStatus");
+    const jobsListEl = document.getElementById("jobsList");
+    const promptTemplateSelect = document.getElementById("prompt_template");
+    const customPromptTextarea = document.getElementById("custom_prompt");
+    const disciplineNameInput = document.getElementById("discipline_name");
+    const disciplineDescriptionInput = document.getElementById("discipline_description");
+    const uploadProgressEl = document.getElementById("uploadProgress");
+    const uploadProgressValueEl = document.getElementById("uploadProgressValue");
+    const uploadProgressTextEl = document.getElementById("uploadProgressText");
+    const selectedFilesEl = document.getElementById("selectedFiles");
+    const jobStreams = new Map();
     function showNotify(msg, error=false, traceback=null, persistent=false) {
         var notif = document.getElementById('notify');
         notif.innerHTML = '';
@@ -633,6 +672,145 @@
         }
     }
 
+    function filterPromptOptions(selectEl, allowedScopes){
+        if(!selectEl) return;
+        Array.from(selectEl.options).forEach((opt, idx) => {
+            if(idx === 0) return; // default option
+            const scope = (opt.getAttribute("data-scope") || "summary").toLowerCase();
+            const allowed = !allowedScopes || allowedScopes.length === 0 || scope === "all" || scope === "both" || allowedScopes.includes(scope);
+            opt.style.display = allowed ? "block" : "none";
+        });
+    }
+
+    const DISCIPLINE_PLACEHOLDER_NAME = "{" + "{" + "НАЗВАНИЕ_ДИСЦИПЛИНЫ" + "}" + "}";
+    const DISCIPLINE_PLACEHOLDER_DESC = "{" + "{" + "ОПИСАНИЕ_ДИСЦИПЛИНЫ" + "}" + "}";
+
+    function replaceDisciplinePlaceholders(text){
+        if(!text) return "";
+        const name = disciplineNameInput ? (disciplineNameInput.value || DISCIPLINE_PLACEHOLDER_NAME) : DISCIPLINE_PLACEHOLDER_NAME;
+        const desc = disciplineDescriptionInput ? (disciplineDescriptionInput.value || DISCIPLINE_PLACEHOLDER_DESC) : DISCIPLINE_PLACEHOLDER_DESC;
+        // Используем split/join вместо RegExp, чтобы избежать конфликтов с Jinja-шаблонами в этом файле
+        return text.split(DISCIPLINE_PLACEHOLDER_NAME).join(name).split(DISCIPLINE_PLACEHOLDER_DESC).join(desc);
+    }
+
+    function applyTemplateToTextarea(selectEl, textareaEl, allowedScopes){
+        if(!selectEl || !textareaEl) return;
+        const selected = selectEl.options[selectEl.selectedIndex];
+        if(!selected) return;
+        const scope = (selected.getAttribute("data-scope") || "summary").toLowerCase();
+        if(allowedScopes && allowedScopes.length && !allowedScopes.includes(scope) && scope !== "all" && scope !== "both"){
+            return;
+        }
+        const text = selected.getAttribute("data-text") || "";
+        if(text){
+            textareaEl.value = replaceDisciplinePlaceholders(text);
+        }
+    }
+
+    function isModelAllowedForEngine(modelName, engine){
+        if(engine === "faster_whisper"){
+            return modelName.startsWith("faster-whisper");
+        }
+        if(engine === "openai_whisper"){
+            return modelName.startsWith("whisper");
+        }
+        return true; // auto — все модели
+    }
+
+    function renderTranscribeOptions(items, updateCache = true){
+        if(!transcribeSelect) return;
+        if(updateCache){
+            allTranscribeModels = items ? items.slice() : [];
+        } else if((!allTranscribeModels || allTranscribeModels.length === 0) && items){
+            allTranscribeModels = items.slice();
+        }
+        const saved = localStorage.getItem(STORAGE_KEYS.transcribeModel);
+        const currentValue = transcribeSelect.value || saved;
+        const engine = asrEngineSelect ? asrEngineSelect.value : "auto";
+        const source = updateCache ? (items || []) : (allTranscribeModels || []);
+        const filtered = source.filter(item => isModelAllowedForEngine(item.name, engine));
+        transcribeSelect.innerHTML = "";
+        filtered.forEach(item => {
+            const opt = document.createElement("option");
+            opt.value = item.name;
+            opt.setAttribute("data-downloaded", item.downloaded ? "true" : "false");
+            opt.textContent = `${item.display_name} ${item.downloaded ? "(скачано)" : "(требуется скачать)"}`;
+            transcribeSelect.appendChild(opt);
+        });
+        const preferred = (currentValue && filtered.find(i => i.name === currentValue))
+            ? currentValue
+            : (saved && filtered.find(i => i.name === saved))
+                ? saved
+                : (filtered[0]?.name || "");
+        if(preferred){
+            transcribeSelect.value = preferred;
+            localStorage.setItem(STORAGE_KEYS.transcribeModel, preferred);
+        }
+        updateDownloadButtonsForType('transcribe');
+    }
+
+    function enforceAsrCompatibility() {
+        if (!asrEngineSelect) return;
+        const modelSelect = document.getElementById("transcribe_model");
+        const modelName = modelSelect ? modelSelect.value : "";
+        const engine = asrEngineSelect.value;
+        // Движок задаёт доступные модели: если модель не подходит, список будет
+        // перерендерен и выберется первая совместимая модель (без автосмены движка).
+        if (!isModelAllowedForEngine(modelName, engine) && allTranscribeModels && allTranscribeModels.length > 0) {
+            renderTranscribeOptions(allTranscribeModels, false);
+        }
+    }
+
+    function updateAsrEngineUI() {
+        if (!asrEngineSelect) return;
+        
+        const engine = asrEngineSelect.value;
+        const modelSelect = document.getElementById("transcribe_model");
+        const modelName = modelSelect ? modelSelect.value : "";
+        enforceAsrCompatibility();
+        
+        // Обновляем подсказку
+        if (asrEngineHint) {
+            if (engine === "auto") {
+                const isFasterModel = modelName.startsWith("faster-whisper");
+                const isWhisperModel = modelName.startsWith("whisper");
+                if (isFasterModel) {
+                    asrEngineHint.textContent = "Auto выберет faster-whisper для этой модели";
+                } else if (isWhisperModel) {
+                    asrEngineHint.textContent = "Auto выберет faster-whisper (если доступен) или openai-whisper";
+                } else {
+                    asrEngineHint.textContent = "Auto автоматически выберет лучший движок для выбранной модели";
+                }
+            } else if (engine === "faster_whisper") {
+                asrEngineHint.textContent = "🟩 Faster-Whisper рекомендуется: быстрее и поддерживает VAD filter";
+            } else if (engine === "openai_whisper") {
+                asrEngineHint.textContent = "🟨 OpenAI Whisper (legacy): VAD filter не поддерживается";
+            }
+        }
+        
+        // Обновляем доступность vad_filter
+        const vadSupported = engine === "faster_whisper" || (engine === "auto" && modelName.startsWith("faster-whisper"));
+        if (vadFilterSelect) {
+            vadFilterSelect.disabled = !vadSupported;
+            vadFilterSelect.style.opacity = vadSupported ? "1" : "0.5";
+        }
+        if (vadFilterBadge) {
+            if (vadSupported) {
+                vadFilterBadge.textContent = "(faster-whisper)";
+                vadFilterBadge.style.color = "#0a0";
+            } else {
+                vadFilterBadge.textContent = "(только faster-whisper)";
+                vadFilterBadge.style.color = "#c00";
+            }
+        }
+        if (vadFilterHint) {
+            vadFilterHint.style.display = vadSupported ? "none" : "block";
+        }
+        if(allTranscribeModels && allTranscribeModels.length > 0){
+            renderTranscribeOptions(allTranscribeModels, false);
+        }
+    }
+
     function updateDownloadButtonsForType(type) {
         if (type === 'transcribe') {
             updateDownloadButton('transcribe_model', 'transcribe_download_btn', 'transcribe');
@@ -741,7 +919,7 @@
                 const currentTranslate = translateModelSelect ? translateModelSelect.value : null;
                 const currentReview = document.getElementById('review_model') ? document.getElementById('review_model').value : null;
                 
-                populateSelect(transcribeSelect, data.transcribe || [], STORAGE_KEYS.transcribeModel);
+                renderTranscribeOptions(data.transcribe || [], true);
                 populateSelect(summarizeSelect, data.summarize || [], STORAGE_KEYS.summarizeModel, 'summarize');
                 
                 // Обновляем также модель ревью теми же моделями
@@ -788,6 +966,7 @@
                 updateDownloadButtonsForType('summarize');
                 updateDownloadButtonsForType('translate');
                 updateLLMMetricLabels();
+                updateAsrEngineUI();
             })
             .catch(() => showNotify("Не удалось обновить список моделей", true));
     }
@@ -807,7 +986,7 @@
         summaryBackendSelect.value = savedBackend;
         customApiUrlInput.value = localStorage.getItem(STORAGE_KEYS.customApiUrl) || "";
         customApiBlock.style.display = savedBackend === "custom_api" ? "block" : "none";
-        populateSelect(transcribeSelect, {{ model_options.transcribe | tojson }}, STORAGE_KEYS.transcribeModel);
+        renderTranscribeOptions({{ model_options.transcribe | tojson }}, true);
         populateSelect(summarizeSelect, {{ model_options.summarize | tojson }}, STORAGE_KEYS.summarizeModel, 'summarize');
         updateDownloadButtonsForType('transcribe');
         updateDownloadButtonsForType('summarize');
@@ -815,6 +994,16 @@
             const savedEngine = localStorage.getItem(STORAGE_KEYS.asrEngine) || "auto";
             asrEngineSelect.value = savedEngine;
             updateAsrEngineUI();
+        }
+        filterPromptOptions(promptTemplateSelect, ["summary","both","all"]);
+        const reviewPromptTemplateSelectEl = document.getElementById("review_prompt_template");
+        const reviewCustomPromptTextareaEl = document.getElementById("review_custom_prompt");
+        if(reviewPromptTemplateSelectEl){
+            filterPromptOptions(reviewPromptTemplateSelectEl, ["review","summary","both","all"]);
+        }
+        applyTemplateToTextarea(promptTemplateSelect, customPromptTextarea, ["summary","both","all"]);
+        if(reviewPromptTemplateSelectEl && reviewCustomPromptTextareaEl){
+            applyTemplateToTextarea(reviewPromptTemplateSelectEl, reviewCustomPromptTextareaEl, ["review","summary","both","all"]);
         }
         const defaultLang = "{{config.TRANSLATION_TARGET_LANG}}";
         ensureOption(targetLanguageSelect, defaultLang);
@@ -957,37 +1146,44 @@
         if(tabId === 'jobsTab'){ loadJobs(); }
     }
 
-    const enableSummaryCheckbox = document.getElementById("enable_summary");
-    const enableTranslationCheckbox = document.getElementById("enable_translation");
-    const targetLanguageAudioSelect = document.getElementById("target_language_audio");
-    const audioLanguageSelect = document.getElementById("audio_language");
-    const presetSelect = document.getElementById("preset");
-    const enableDiarizationCheckbox = document.getElementById("enable_diarization");
-    const beamSizeInput = document.getElementById("beam_size");
-    const temperatureInput = document.getElementById("temperature");
-    const vadFilterSelect = document.getElementById("vad_filter");
-    const noSpeechThresholdInput = document.getElementById("no_speech_threshold");
-    const asrEngineSelect = document.getElementById("asr_engine");
-    const asrEngineHint = document.getElementById("asr_engine_hint");
-    const vadFilterBadge = document.getElementById("vad_filter_badge");
-    const vadFilterHint = document.getElementById("vad_filter_hint");
-    const audioJobStatusEl = document.getElementById("audioJobStatus");
-    const docJobStatusEl = document.getElementById("docJobStatus");
-    const jobsListEl = document.getElementById("jobsList");
-    const promptTemplateSelect = document.getElementById("prompt_template");
-    const customPromptTextarea = document.getElementById("custom_prompt");
-    const jobStreams = new Map();
-
-    if(promptTemplateSelect && customPromptTextarea){
-        promptTemplateSelect.addEventListener("change", () => {
-            const selected = promptTemplateSelect.options[promptTemplateSelect.selectedIndex];
-            const text = selected ? selected.getAttribute("data-text") : "";
-            if(text){
-                customPromptTextarea.value = text;
-            }
-        });
+    function formatBytes(bytes){
+        if(!bytes && bytes !== 0) return "";
+        const units = ["B","KB","MB","GB"];
+        let val = bytes;
+        let i = 0;
+        while(val >= 1024 && i < units.length - 1){
+            val /= 1024;
+            i++;
+        }
+        return `${val.toFixed(val >= 10 || val < 1 ? 1 : 2)} ${units[i]}`;
     }
-    
+
+    function showSelectedFiles(fileList){
+        if(!selectedFilesEl) return;
+        if(!fileList || fileList.length === 0){
+            selectedFilesEl.innerHTML = "";
+            return;
+        }
+        const chips = Array.from(fileList).map(f => `<span class="file-chip" title="${f.name}">${f.name}</span>`);
+        selectedFilesEl.innerHTML = chips.join("");
+    }
+
+    function resetUploadProgress(){
+        if(uploadProgressEl) uploadProgressEl.style.display = "none";
+        if(uploadProgressTextEl) uploadProgressTextEl.style.display = "none";
+        if(uploadProgressValueEl) uploadProgressValueEl.style.width = "0%";
+        if(uploadProgressTextEl) uploadProgressTextEl.textContent = "";
+    }
+
+    function setUploadProgress(pct, text){
+        if(uploadProgressEl) uploadProgressEl.style.display = "block";
+        if(uploadProgressValueEl) uploadProgressValueEl.style.width = `${Math.min(100, Math.max(0, pct))}%`;
+        if(uploadProgressTextEl){
+            uploadProgressTextEl.style.display = "block";
+            uploadProgressTextEl.textContent = text || `Загрузка: ${pct}%`;
+        }
+    }
+
     // Обработчик для скрытия/показа блоков пересказа
     function toggleSummaryBlocks() {
         const isEnabled = enableSummaryCheckbox ? enableSummaryCheckbox.checked : false;
@@ -1035,80 +1231,25 @@
     // Обработчик для шаблона промпта ревью
     if (reviewPromptTemplateSelect && reviewCustomPromptTextarea) {
         reviewPromptTemplateSelect.addEventListener("change", () => {
-            const selected = reviewPromptTemplateSelect.options[reviewPromptTemplateSelect.selectedIndex];
-            const text = selected ? selected.getAttribute("data-text") : "";
-            if (text) {
-                reviewCustomPromptTextarea.value = text;
-            }
+            applyTemplateToTextarea(reviewPromptTemplateSelect, reviewCustomPromptTextarea, ["review","summary","both","all"]);
         });
     }
-    
-    // Обработчик для выбора движка ASR
-    function enforceAsrCompatibility() {
-        if (!asrEngineSelect) return;
-        const modelSelect = document.getElementById("transcribe_model");
-        const modelName = modelSelect ? modelSelect.value : "";
-        const engine = asrEngineSelect.value;
-        // faster-whisper модели нельзя запускать через openai_whisper
-        if (modelName.startsWith("faster-whisper") && engine === "openai_whisper") {
-            asrEngineSelect.value = "faster_whisper";
-            showNotify("Для faster-whisper выберите движок Faster-Whisper или Auto", true);
-        }
+    if(promptTemplateSelect && customPromptTextarea){
+        promptTemplateSelect.addEventListener("change", () => {
+            applyTemplateToTextarea(promptTemplateSelect, customPromptTextarea, ["summary","both","all"]);
+        });
     }
-
-    function updateAsrEngineUI() {
-        if (!asrEngineSelect) return;
-        
-        const engine = asrEngineSelect.value;
-        const modelSelect = document.getElementById("transcribe_model");
-        const modelName = modelSelect ? modelSelect.value : "";
-        enforceAsrCompatibility();
-        
-        // Обновляем подсказку
-        if (asrEngineHint) {
-            if (engine === "auto") {
-                const isFasterModel = modelName.startsWith("faster-whisper");
-                const isWhisperModel = modelName.startsWith("whisper");
-                if (isFasterModel) {
-                    asrEngineHint.textContent = "Auto выберет faster-whisper для этой модели";
-                } else if (isWhisperModel) {
-                    asrEngineHint.textContent = "Auto выберет faster-whisper (если доступен) или openai-whisper";
-                } else {
-                    asrEngineHint.textContent = "Auto автоматически выберет лучший движок для выбранной модели";
-                }
-            } else if (engine === "faster_whisper") {
-                asrEngineHint.textContent = "🟩 Faster-Whisper рекомендуется: быстрее и поддерживает VAD filter";
-            } else if (engine === "openai_whisper") {
-                asrEngineHint.textContent = "🟨 OpenAI Whisper (legacy): VAD filter не поддерживается";
-            }
-        }
-        
-        // Обновляем доступность vad_filter
-        const vadSupported = engine === "faster_whisper" || (engine === "auto" && modelName.startsWith("faster-whisper"));
-        if (vadFilterSelect) {
-            vadFilterSelect.disabled = !vadSupported;
-            if (vadSupported) {
-                vadFilterSelect.style.opacity = "1";
-            } else {
-                vadFilterSelect.style.opacity = "0.5";
-            }
-        }
-        if (vadFilterBadge) {
-            if (vadSupported) {
-                vadFilterBadge.textContent = "(faster-whisper)";
-                vadFilterBadge.style.color = "#0a0";
-            } else {
-                vadFilterBadge.textContent = "(только faster-whisper)";
-                vadFilterBadge.style.color = "#c00";
-            }
-        }
-        if (vadFilterHint) {
-            if (vadSupported) {
-                vadFilterHint.style.display = "none";
-            } else {
-                vadFilterHint.style.display = "block";
-            }
-        }
+    if(disciplineNameInput){
+        disciplineNameInput.addEventListener("input", () => {
+            applyTemplateToTextarea(promptTemplateSelect, customPromptTextarea, ["summary","both","all"]);
+            applyTemplateToTextarea(reviewPromptTemplateSelect, reviewCustomPromptTextarea, ["review","summary","both","all"]);
+        });
+    }
+    if(disciplineDescriptionInput){
+        disciplineDescriptionInput.addEventListener("input", () => {
+            applyTemplateToTextarea(promptTemplateSelect, customPromptTextarea, ["summary","both","all"]);
+            applyTemplateToTextarea(reviewPromptTemplateSelect, reviewCustomPromptTextarea, ["review","summary","both","all"]);
+        });
     }
     
     if (asrEngineSelect) {
@@ -1249,6 +1390,8 @@
             custom_prompt: document.getElementById('custom_prompt').value || undefined,
             enable_translation: enableTranslationCheckbox.checked,
             target_language: targetLanguageAudioSelect.value,
+            discipline_name: disciplineNameInput ? disciplineNameInput.value : undefined,
+            discipline_description: disciplineDescriptionInput ? disciplineDescriptionInput.value : undefined,
         };
         const fd = new FormData();
         const endpoint = files.length > 1 ? '/api/jobs/audio/batch' : '/api/jobs/audio';
@@ -1258,36 +1401,54 @@
             fd.append('file', files[0]);
         }
         fd.append('params', JSON.stringify(params));
-        showNotify('Задача отправлена, ожидайте...', false, null, true);
-        const resp = await fetch(endpoint, {method:'POST', body: fd});
-        if(!resp.ok){
-            let errorMessage = 'Ошибка отправки задачи';
-            try{
-                const err = await resp.json();
-                errorMessage = err.detail || errorMessage;
-            }catch(_){}
-            showNotify(errorMessage, true);
-            return;
-        }
-        const data = await resp.json();
-        if(files.length > 1){
-            if(!Array.isArray(data.job_ids)){
-                showNotify('Ошибка отправки задачи', true);
-                return;
+        showNotify('Отправляем файлы, подождите...', false, null, true);
+        resetUploadProgress();
+        const xhr = new XMLHttpRequest();
+        xhr.open('POST', endpoint);
+        xhr.upload.onprogress = function(e){
+            if(e.lengthComputable){
+                const pct = Math.round((e.loaded / e.total) * 100);
+                setUploadProgress(pct, `Загружено ${pct}% (${formatBytes(e.loaded)} / ${formatBytes(e.total)})`);
+            } else {
+                setUploadProgress(30, 'Загрузка...');
             }
-            audioJobStatusEl.innerHTML = '';
-            data.job_ids.forEach((id, idx) => {
-                const row = document.createElement('div');
-                row.className = 'job-status';
-                row.innerHTML = `<p class="small">Job ${id} создан (${idx + 1}/${data.job_ids.length}), ждём события...</p>`;
-                audioJobStatusEl.appendChild(row);
-                trackJob(id, row);
-            });
-        }else{
-            audioJobStatusEl.innerHTML = `<p class="small">Job ${data.job_id} создан, ждём события...</p>`;
-            trackJob(data.job_id, audioJobStatusEl);
-        }
-        loadJobs();
+        };
+        xhr.onerror = function(){
+            resetUploadProgress();
+            showNotify('Ошибка отправки задачи', true);
+        };
+        xhr.onload = function(){
+            resetUploadProgress();
+            try{
+                if(xhr.status < 200 || xhr.status >= 300){
+                    const err = JSON.parse(xhr.responseText || '{}');
+                    showNotify(err.detail || 'Ошибка отправки задачи', true);
+                    return;
+                }
+                const data = JSON.parse(xhr.responseText || '{}');
+                if(files.length > 1){
+                    if(!Array.isArray(data.job_ids)){
+                        showNotify('Ошибка отправки задачи', true);
+                        return;
+                    }
+                    audioJobStatusEl.innerHTML = '';
+                    data.job_ids.forEach((id, idx) => {
+                        const row = document.createElement('div');
+                        row.className = 'job-status';
+                        row.innerHTML = `<p class="small">Job ${id} создан (${idx + 1}/${data.job_ids.length}), ждём события...</p>`;
+                        audioJobStatusEl.appendChild(row);
+                        trackJob(id, row);
+                    });
+                }else{
+                    audioJobStatusEl.innerHTML = `<p class="small">Job ${data.job_id} создан, ждём события...</p>`;
+                    trackJob(data.job_id, audioJobStatusEl);
+                }
+                loadJobs();
+            }catch(_){
+                showNotify('Ошибка разбора ответа сервера', true);
+            }
+        };
+        xhr.send(fd);
     }
 
     async function submitDoc(event){
@@ -1322,6 +1483,13 @@
     document.getElementById('processForm').onsubmit = submitAudio;
     if(document.getElementById('translateForm')){
         document.getElementById('translateForm').onsubmit = submitDoc;
+    }
+    const audioFileInput = document.getElementById('file');
+    if(audioFileInput){
+        audioFileInput.addEventListener('change', () => {
+            showSelectedFiles(audioFileInput.files);
+            resetUploadProgress();
+        });
     }
     loadJobs();
     </script>

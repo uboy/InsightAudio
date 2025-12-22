@@ -2,6 +2,7 @@ import gzip
 import json
 import logging
 import os
+import re
 import shutil
 import threading
 import traceback
@@ -284,6 +285,12 @@ def _add_manifest_item(manifest: List[Dict], file_path: str, kind: str, base_dir
     })
 
 
+def _safe_stem_from_filename(name: Optional[str]) -> str:
+    stem = os.path.splitext(os.path.basename(name or "media"))[0]
+    stem = re.sub(r"[^A-Za-z0-9._-]+", "_", stem).strip("._")
+    return stem or "media"
+
+
 def _save_manifest(
     base_dir: str,
     transcript_text: str,
@@ -293,12 +300,15 @@ def _save_manifest(
     meta: Optional[Dict] = None,
     input_original_path: Optional[str] = None,
     audio_wav_path: Optional[str] = None,
+    original_filename: Optional[str] = None,
 ) -> List[Dict]:
     """
     Сохраняет результаты задачи и создает manifest.
     Все файлы должны находиться внутри base_dir (job_dir).
     """
     manifest: List[Dict] = []
+    ts = datetime.utcnow().strftime("%Y%m%d_%H%M%S")
+    stem = _safe_stem_from_filename(original_filename or input_original_path)
     
     # Сохраняем input_original если указан
     if input_original_path and os.path.exists(input_original_path):
@@ -329,12 +339,14 @@ def _save_manifest(
             LOGGER.warning("Не удалось сохранить WAV файл: %s", e)
     
     # Сохраняем transcript.txt
-    transcript_path = os.path.join(base_dir, "transcript.txt")
+    transcript_filename = f"{stem}_transcript_{ts}.txt"
+    transcript_json_filename = f"{stem}_transcript_{ts}.json"
+    transcript_path = os.path.join(base_dir, transcript_filename)
     _write_text(transcript_path, transcript_text)
     _add_manifest_item(manifest, transcript_path, "transcript_txt", base_dir)
     
     # Сохраняем transcript.json
-    transcript_json_path = os.path.join(base_dir, "transcript.json")
+    transcript_json_path = os.path.join(base_dir, transcript_json_filename)
     with open(transcript_json_path, "w", encoding="utf-8") as f:
         json.dump({"text": transcript_text, "segments": segments or []}, f, ensure_ascii=False, indent=2)
     _add_manifest_item(manifest, transcript_json_path, "transcript_json", base_dir)
@@ -599,6 +611,7 @@ def audio_job(self, job_id: str, user_id: str, params: Dict) -> str:
                 meta=meta,
                 input_original_path=audio_path,
                 audio_wav_path=wav_path,
+                original_filename=params.get("original_filename"),
             )
             LOGGER.info("Job %s: Results saved, manifest: %s", job_id, manifest)
             update_job(

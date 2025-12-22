@@ -4,7 +4,9 @@
     <option name="autoReloadType" value="SELECTIVE" />
   </component>
   <component name="ChangeListManager">
-    <list default="true" id="27c1b00d-8878-4a90-9c2a-cb5b391cddc9" name="Changes" comment="Improve ASR heartbeat/logging and use browser timezone for timestamps" />
+    <list default="true" id="27c1b00d-8878-4a90-9c2a-cb5b391cddc9" name="Changes" comment="upload progress, filter models by engine, limit increased to 4h, transcipt filenames now include original file name">
+      <change beforePath="$PROJECT_DIR$/app/templates/index.html" beforeDir="false" afterPath="$PROJECT_DIR$/app/templates/index.html" afterDir="false" />
+    </list>
     <option name="SHOW_DIALOG" value="false" />
     <option name="HIGHLIGHT_CONFLICTS" value="true" />
     <option name="HIGHLIGHT_NON_ACTIVE_CHANGELIST" value="false" />
@@ -75,6 +77,8 @@
     <MESSAGE value="Add logging config/rotation, improve audio job progress visibility, and auto-cancel stale jobs" />
     <MESSAGE value="fix timezone for user, add debug more logs" />
     <MESSAGE value="Improve ASR heartbeat/logging and use browser timezone for timestamps" />
-    <option name="LAST_COMMIT_MESSAGE" value="Improve ASR heartbeat/logging and use browser timezone for timestamps" />
+    <MESSAGE value="Implement multiple media processing" />
+    <MESSAGE value="upload progress, filter models by engine, limit increased to 4h, transcipt filenames now include original file name" />
+    <option name="LAST_COMMIT_MESSAGE" value="upload progress, filter models by engine, limit increased to 4h, transcipt filenames now include original file name" />
   </component>
 </project>
