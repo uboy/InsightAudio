@@ -626,15 +626,29 @@ def audio_job(self, job_id: str, user_id: str, params: Dict) -> str:
             LOGGER.info("Job %s: Completed successfully", job_id)
         except Exception as exc:  # pylint: disable=broad-except
             LOGGER.error("Job %s: Failed with error: %s", job_id, str(exc), exc_info=True)
+            try:
+                session.refresh(job)
+            except Exception:
+                pass
+            original_filename = params.get("original_filename")
+            stage = getattr(job, "stage", None)
+            header_parts = []
+            if original_filename:
+                header_parts.append(f"Файл: {original_filename}")
+            if stage:
+                header_parts.append(f"Стадия: {stage}")
+            header = "\n".join(header_parts)
+            message = str(exc)
+            if header:
+                message = f"{header}\n{message}"
             update_job(
                 session,
                 job_id,
                 status="failed",
-                stage="failed",
-                progress=100,
-                error_message=str(exc),
+                error_message=message,
                 error_traceback=traceback.format_exc(),
                 finished_at=datetime.utcnow(),
+                eta_seconds=None,
             )
     return job_id
 
@@ -704,15 +718,29 @@ def doc_job(self, job_id: str, user_id: str, params: Dict) -> str:
                 result_manifest=manifest,
             )
         except Exception as exc:  # pylint: disable=broad-except
+            try:
+                session.refresh(job)
+            except Exception:
+                pass
+            original_filename = params.get("original_filename")
+            stage = getattr(job, "stage", None)
+            header_parts = []
+            if original_filename:
+                header_parts.append(f"Файл: {original_filename}")
+            if stage:
+                header_parts.append(f"Стадия: {stage}")
+            header = "\n".join(header_parts)
+            message = str(exc)
+            if header:
+                message = f"{header}\n{message}"
             update_job(
                 session,
                 job_id,
                 status="failed",
-                stage="failed",
-                progress=100,
-                error_message=str(exc),
+                error_message=message,
                 error_traceback=traceback.format_exc(),
                 finished_at=datetime.utcnow(),
+                eta_seconds=None,
             )
     return job_id
 

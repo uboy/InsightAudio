@@ -55,6 +55,13 @@
                 </div>
                 <div id="uploadProgressText" class="small" style="display:none;">Загрузка...</div>
 
+                <div class="models-section" style="margin-top: 10px;">
+                    <button type="submit" id="processBtn">Отправить в очередь</button>
+                    <div id="progress-bar"><div id="progress-value"></div></div>
+                    <div class="progress-info" id="progress-info"></div>
+                    <div id="audioJobStatus" class="job-status"></div>
+                </div>
+
                 <div class="models-section">
                     <label for="transcribe_model">Модель транскрипции:</label>
                     <div style="display: flex; gap: 10px; align-items: center;">
@@ -240,11 +247,7 @@
                     </select>
                 </div>
 
-                <div id="progress-bar"><div id="progress-value"></div></div>
-                <div class="progress-info" id="progress-info"></div>
-                <button type="submit" id="processBtn">Отправить в очередь</button>
             </form>
-            <div id="audioJobStatus" class="job-status"></div>
         </section>
 
         <section id="docTab" class="tab-section" style="display:none;">
@@ -1158,13 +1161,27 @@
         return `${val.toFixed(val >= 10 || val < 1 ? 1 : 2)} ${units[i]}`;
     }
 
+    function escapeHtml(value){
+        const str = String(value ?? "");
+        return str.replace(/[&<>"']/g, (ch) => ({
+            "&": "&amp;",
+            "<": "&lt;",
+            ">": "&gt;",
+            "\"": "&quot;",
+            "'": "&#39;",
+        }[ch] || ch));
+    }
+
     function showSelectedFiles(fileList){
         if(!selectedFilesEl) return;
         if(!fileList || fileList.length === 0){
             selectedFilesEl.innerHTML = "";
             return;
         }
-        const chips = Array.from(fileList).map(f => `<span class="file-chip" title="${f.name}">${f.name}</span>`);
+        const chips = Array.from(fileList).map(f => {
+            const name = escapeHtml(f.name);
+            return `<span class="file-chip" title="${name}">${name}</span>`;
+        });
         selectedFilesEl.innerHTML = chips.join("");
     }
 
@@ -1292,11 +1309,12 @@
 
     function makeJobCard(job){
         const statusColor = job.status === 'success' ? '#0a0' : job.status === 'failed' ? '#c00' : '#0059b2';
+        const originalFilename = job?.params?.original_filename ? escapeHtml(job.params.original_filename) : '';
         const manifest = (job.result_manifest || []).map(item => {
             const url = `/api/jobs/${job.id}/download/${encodeURIComponent(item.name)}`;
-            return `<a href="${url}" class="btn" download>${item.kind || item.name}</a>`;
+            return `<a href="${url}" class="btn" download>${escapeHtml(item.kind || item.name)}</a>`;
         }).join(' ');
-        const err = job.error_message ? `<div style="color:#c00;font-size:13px;">${job.error_message}</div>` : '';
+        const err = job.error_message ? `<div style="color:#c00;font-size:13px;white-space:pre-wrap;">${escapeHtml(job.error_message)}</div>` : '';
         const eta = job.eta_seconds != null ? `ETA: ~${Math.ceil(job.eta_seconds)} c` : '';
         const created = formatDateTime(job.created_at);
         const started = formatDateTime(job.started_at);
@@ -1307,6 +1325,7 @@
             <div class="file-block">
                 <div><b>ID:</b> ${job.id}</div>
                 <div><b>Тип:</b> ${job.job_type}</div>
+                ${originalFilename ? `<div><b>Файл:</b> ${originalFilename}</div>` : ''}
                 <div><b>Статус:</b> <span style="color:${statusColor}">${job.status}</span> · стадия: ${job.stage} · прогресс: ${job.progress}% ${eta} ${cancelBtn}</div>
                 <div class="small"><b>Создана:</b> ${created} · <b>Начата:</b> ${started} · <b>Завершена:</b> ${finished}</div>
                 ${manifest ? `<div style="margin-top:8px;">${manifest}</div>` : ''}
@@ -1433,14 +1452,16 @@
                     }
                     audioJobStatusEl.innerHTML = '';
                     data.job_ids.forEach((id, idx) => {
+                        const fileName = files[idx]?.name ? escapeHtml(files[idx].name) : '';
                         const row = document.createElement('div');
                         row.className = 'job-status';
-                        row.innerHTML = `<p class="small">Job ${id} создан (${idx + 1}/${data.job_ids.length}), ждём события...</p>`;
+                        row.innerHTML = `<p class="small">Job ${id} создан${fileName ? ` для файла "${fileName}"` : ''} (${idx + 1}/${data.job_ids.length}), ждём события...</p>`;
                         audioJobStatusEl.appendChild(row);
                         trackJob(id, row);
                     });
                 }else{
-                    audioJobStatusEl.innerHTML = `<p class="small">Job ${data.job_id} создан, ждём события...</p>`;
+                    const fileName = files[0]?.name ? escapeHtml(files[0].name) : '';
+                    audioJobStatusEl.innerHTML = `<p class="small">Job ${data.job_id} создан${fileName ? ` для файла "${fileName}"` : ''}, ждём события...</p>`;
                     trackJob(data.job_id, audioJobStatusEl);
                 }
                 loadJobs();

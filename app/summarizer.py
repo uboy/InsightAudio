@@ -149,12 +149,16 @@ def _summarize_via_custom_api(
 ) -> str:
     if not api_url:
         raise RuntimeError("Не указан URL пользовательского API summary")
-    
+
+    cfg = config_manager.get_config()
+    timeout_sec = int(cfg.get("CUSTOM_SUMMARY_API_TIMEOUT_SECONDS", 600) or 600)
+
     # Определяем endpoint для запроса
     api_url_clean = api_url.rstrip('/')
-    
+    is_ollama_like = ':11434' in api_url_clean or 'ollama' in api_url_clean.lower()
+
     # Если URL похож на Ollama (порт 11434), используем стандартный endpoint Ollama
-    if ':11434' in api_url_clean or 'ollama' in api_url_clean.lower():
+    if is_ollama_like:
         endpoint = f"{api_url_clean}/api/generate"
         payload = {
             "model": model,
@@ -184,11 +188,19 @@ def _summarize_via_custom_api(
             "input": text,
             "message": f"{prompt}\n\n{text}",
         }
-    
+
     LOGGER.debug("Custom summary API POST %s with payload keys: %s", endpoint, list(payload.keys()))
     try:
-        response = requests.post(endpoint, json=payload, headers=headers or {}, timeout=120)
+        response = requests.post(endpoint, json=payload, headers=headers or {}, timeout=timeout_sec)
         response.raise_for_status()
+    except requests.exceptions.Timeout as e:
+        kind = "Ollama" if is_ollama_like else "Custom API"
+        raise RuntimeError(
+            f"Таймаут при запросе к LLM ({kind}) endpoint={endpoint} timeout={timeout_sec}s"
+        ) from e
+    except requests.exceptions.ConnectionError as e:
+        kind = "Ollama" if is_ollama_like else "Custom API"
+        raise RuntimeError(f"Не удалось подключиться к LLM ({kind}) endpoint={endpoint}: {e}") from e
     except requests.exceptions.HTTPError as e:
         if e.response.status_code == 405:
             # Если метод не разрешен, пробуем другие endpoints
@@ -202,16 +214,23 @@ def _summarize_via_custom_api(
                 if alt_endpoint != endpoint:
                     try:
                         LOGGER.debug("Пробуем альтернативный endpoint: %s", alt_endpoint)
-                        response = requests.post(alt_endpoint, json=payload, headers=headers or {}, timeout=120)
+                        response = requests.post(alt_endpoint, json=payload, headers=headers or {}, timeout=timeout_sec)
                         response.raise_for_status()
                         endpoint = alt_endpoint
                         break
-                    except Exception:
+                    except requests.exceptions.Timeout:
+                        continue
+                    except requests.exceptions.ConnectionError:
+                        continue
+                    except requests.exceptions.RequestException:
                         continue
             else:
                 raise
         else:
             raise
+    except requests.exceptions.RequestException as e:
+        kind = "Ollama" if is_ollama_like else "Custom API"
+        raise RuntimeError(f"Ошибка запроса к LLM ({kind}) endpoint={endpoint}: {e}") from e
     try:
         data = response.json()
     except ValueError:
