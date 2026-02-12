@@ -18,9 +18,9 @@ from sqlalchemy.orm import Session
 
 from app import config_manager, file_utils, models as model_registry, summarizer, transcriber, translator
 from app.db import SessionLocal, get_session
-from app.db_models import Job, User
+from app.db_models import Job, User, UserPrompt
 from app.job_service import build_user_job_dir, create_job, ensure_tables, get_or_create_user, update_job
-from app.tasks import audio_job, doc_job
+from app.tasks import audio_job, doc_job, summarize_text_job
 from app import settings_loader
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
@@ -256,6 +256,8 @@ def _get_config_view() -> Dict:
         "DEFAULT_PDF_REFLOW": cfg.get("DEFAULT_PDF_REFLOW", False),
         "DEFAULT_IMAGE_TRANSLATION_MODE": cfg.get("DEFAULT_IMAGE_TRANSLATION_MODE", "notes"),
         "ENABLE_SPEAKER_DIARIZATION": cfg.get("ENABLE_SPEAKER_DIARIZATION", True),
+        "DEFAULT_TRANSCRIBE_MODEL": cfg.get("DEFAULT_TRANSCRIBE_MODEL", "faster-whisper-large-v3"),
+        "DEFAULT_PRESET": cfg.get("DEFAULT_PRESET", "quality"),
         "PROMPT_TEMPLATES": prompts,
     }
 
@@ -379,16 +381,18 @@ def _parse_params_json(params_raw: str) -> Dict:
 
 
 def _create_audio_job_record(user: User, upload_file: UploadFile, params_dict: Dict, db: Session) -> str:
+    cfg = config_manager.get_config()
     job_id = uuid.uuid4().hex
     job_dir = build_user_job_dir(user.id, job_id)
     saved_path = file_utils.handle_upload(upload_file, save_dir=job_dir)
     _enforce_size_limit(saved_path)
     job_params = dict(params_dict or {})
+    default_model = cfg.get("DEFAULT_TRANSCRIBE_MODEL", "faster-whisper-large-v3")
     job_params.update(
         {
             "input_path": saved_path,
             "original_filename": upload_file.filename,
-            "asr_model": job_params.get("asr_model") or job_params.get("transcribe_model") or "whisper-tiny",
+            "asr_model": job_params.get("asr_model") or job_params.get("transcribe_model") or default_model,
         }
     )
     job = create_job(db, user_id=user.id, job_type="audio", stage="upload_saved", params=job_params, job_id=job_id)
@@ -459,6 +463,52 @@ async def create_doc_job(
     )
     job = create_job(db, user_id=user.id, job_type="doc_translate", stage="upload_saved", params=params_dict, job_id=job_id)
     doc_job.delay(job.id, user.id, params_dict)
+    return {"job_id": job.id}
+
+
+@app.post("/api/jobs/summarize_text")
+async def create_summarize_text_job(
+    request: Request,
+    files: List[UploadFile] = File(...),
+    params: str = Form("{}"),
+    db: Session = Depends(get_session),
+):
+    user = _get_user(request, db)
+    params_dict = _parse_params_json(params)
+    cfg = config_manager.get_config()
+    max_files = int(cfg.get("MAX_TEXT_BATCH_FILES", 10))
+    max_file_bytes = 1 * 1024 * 1024  # 1MB per file
+
+    upload_files = [f for f in files if f is not None]
+    if not upload_files:
+        raise HTTPException(status_code=400, detail="Не переданы файлы")
+    if len(upload_files) > max_files:
+        raise HTTPException(status_code=400, detail=f"Можно загрузить не более {max_files} файлов")
+
+    job_id = uuid.uuid4().hex
+    job_dir = build_user_job_dir(user.id, job_id)
+    text_filenames: List[str] = []
+
+    for uf in upload_files:
+        saved_path = file_utils.handle_upload(uf, save_dir=job_dir)
+        if os.path.getsize(saved_path) > max_file_bytes:
+            shutil.rmtree(job_dir, ignore_errors=True)
+            raise HTTPException(status_code=413, detail=f"Файл {uf.filename} превышает лимит 1 MB")
+        try:
+            with open(saved_path, "r", encoding="utf-8") as f:
+                f.read(1024)
+        except UnicodeDecodeError:
+            shutil.rmtree(job_dir, ignore_errors=True)
+            raise HTTPException(status_code=400, detail=f"Файл {uf.filename} не является текстовым (UTF-8)")
+        text_filenames.append(os.path.basename(saved_path))
+
+    job_params = dict(params_dict)
+    job_params["text_files"] = text_filenames
+    job_params["original_filenames"] = [uf.filename for uf in upload_files]
+    job_params["enable_summary"] = True
+
+    job = create_job(db, user_id=user.id, job_type="summarize_text", stage="upload_saved", params=job_params, job_id=job_id)
+    summarize_text_job.delay(job.id, user.id, job_params)
     return {"job_id": job.id}
 
 
@@ -876,6 +926,94 @@ async def translate_document(
         request_logger.removeHandler(buffer_handler)
         request_logger.removeHandler(file_handler)
         file_handler.close()
+
+
+def _prompt_to_dict(p: UserPrompt) -> Dict:
+    return {
+        "id": p.id,
+        "title": p.title,
+        "description": p.description or "",
+        "scope": p.scope,
+        "prompt_text": p.prompt_text,
+        "is_user_prompt": True,
+        "created_at": p.created_at.isoformat() + "Z" if p.created_at else None,
+        "updated_at": p.updated_at.isoformat() + "Z" if p.updated_at else None,
+    }
+
+
+@app.get("/api/user_prompts")
+def list_user_prompts(request: Request, db: Session = Depends(get_session)):
+    user = _get_user(request, db)
+    prompts = (
+        db.execute(
+            select(UserPrompt)
+            .where(UserPrompt.user_id == user.id)
+            .order_by(UserPrompt.updated_at.desc())
+        ).scalars().all()
+    )
+    return [_prompt_to_dict(p) for p in prompts]
+
+
+@app.post("/api/user_prompts", status_code=201)
+def create_user_prompt(request: Request, body: Dict, db: Session = Depends(get_session)):
+    user = _get_user(request, db)
+    title = (body.get("title") or "").strip()
+    prompt_text = (body.get("prompt_text") or "").strip()
+    if not title:
+        raise HTTPException(status_code=400, detail="title is required")
+    if not prompt_text:
+        raise HTTPException(status_code=400, detail="prompt_text is required")
+    scope = body.get("scope", "summary")
+    if scope not in ("summary", "review", "both"):
+        scope = "summary"
+    prompt = UserPrompt(
+        user_id=user.id,
+        title=title,
+        description=(body.get("description") or "").strip(),
+        scope=scope,
+        prompt_text=prompt_text,
+    )
+    db.add(prompt)
+    db.commit()
+    db.refresh(prompt)
+    return _prompt_to_dict(prompt)
+
+
+@app.put("/api/user_prompts/{prompt_id}")
+def update_user_prompt(request: Request, prompt_id: str, body: Dict, db: Session = Depends(get_session)):
+    user = _get_user(request, db)
+    prompt = db.get(UserPrompt, prompt_id)
+    if not prompt or prompt.user_id != user.id:
+        raise HTTPException(status_code=404, detail="Prompt not found")
+    if "title" in body:
+        title = (body["title"] or "").strip()
+        if not title:
+            raise HTTPException(status_code=400, detail="title cannot be empty")
+        prompt.title = title
+    if "description" in body:
+        prompt.description = (body["description"] or "").strip()
+    if "scope" in body and body["scope"] in ("summary", "review", "both"):
+        prompt.scope = body["scope"]
+    if "prompt_text" in body:
+        text = (body["prompt_text"] or "").strip()
+        if not text:
+            raise HTTPException(status_code=400, detail="prompt_text cannot be empty")
+        prompt.prompt_text = text
+    prompt.updated_at = datetime.utcnow()
+    db.commit()
+    db.refresh(prompt)
+    return _prompt_to_dict(prompt)
+
+
+@app.delete("/api/user_prompts/{prompt_id}")
+def delete_user_prompt(request: Request, prompt_id: str, db: Session = Depends(get_session)):
+    user = _get_user(request, db)
+    prompt = db.get(UserPrompt, prompt_id)
+    if not prompt or prompt.user_id != user.id:
+        raise HTTPException(status_code=404, detail="Prompt not found")
+    db.delete(prompt)
+    db.commit()
+    return {"status": "deleted"}
 
 
 @app.get("/config")

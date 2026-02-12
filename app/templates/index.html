@@ -38,6 +38,7 @@
         <h1>InsightAudio</h1>
         <div class="tabs">
             <button class="tab-btn active" data-tab="audioTab" onclick="switchTab('audioTab')">Audio</button>
+            <button class="tab-btn" data-tab="textSummaryTab" onclick="switchTab('textSummaryTab')">Text Summary</button>
             <button class="tab-btn" data-tab="docTab" onclick="switchTab('docTab')">Documents</button>
             <button class="tab-btn" data-tab="jobsTab" onclick="switchTab('jobsTab')">My Jobs</button>
         </div>
@@ -101,8 +102,8 @@
                     </select>
                     <label for="preset">Пресет качества:</label>
                     <select id="preset">
-                        <option value="quality">Quality (beam=5, vad, loudnorm)</option>
-                        <option value="balanced" selected>Balanced (beam=3, vad, loudnorm)</option>
+                        <option value="quality" selected>Quality (beam=5, vad, loudnorm)</option>
+                        <option value="balanced">Balanced (beam=3, vad, loudnorm)</option>
                         <option value="fast">Fast (beam=1, vad, no loudnorm)</option>
                     </select>
                     <label><input type="checkbox" id="enable_diarization" checked> Диаризация</label>
@@ -234,6 +235,25 @@
                     </select>
                     <label for="custom_prompt">Промпт для текущего запуска:</label>
                     <textarea id="custom_prompt" rows="5" placeholder="Настройте текст промпта"></textarea>
+
+                    <details id="user_prompts_manager" style="margin-top:10px;">
+                        <summary style="cursor:pointer;font-weight:bold;">Мои сохранённые промпты</summary>
+                        <div id="userPromptsList" style="margin:8px 0;"></div>
+                        <hr>
+                        <div style="display:flex;flex-direction:column;gap:4px;">
+                            <label for="save_prompt_title">Название:</label>
+                            <input type="text" id="save_prompt_title" placeholder="Например: Еженедельный стендап">
+                            <label for="save_prompt_scope">Область:</label>
+                            <select id="save_prompt_scope">
+                                <option value="summary">Summary</option>
+                                <option value="review">Review</option>
+                                <option value="both">Both</option>
+                            </select>
+                            <label for="save_prompt_description">Описание (опционально):</label>
+                            <input type="text" id="save_prompt_description" placeholder="Краткое описание">
+                            <button type="button" class="download-btn" id="save_prompt_btn" onclick="saveCurrentPrompt()">Сохранить промпт</button>
+                        </div>
+                    </details>
                 </div>
 
                 <div class="models-section">
@@ -248,6 +268,51 @@
                 </div>
 
             </form>
+        </section>
+
+        <section id="textSummaryTab" class="tab-section" style="display:none;">
+            <h2>Пересказ текстовых транскрипций</h2>
+            <form id="textSummaryForm">
+                <label for="text_files">Текстовые файлы (.txt, до 1 МБ каждый, до 10 штук):</label>
+                <input type="file" name="files" id="text_files" required accept=".txt,.text,.md" multiple>
+                <div id="textSelectedFiles" class="small"></div>
+
+                <div class="models-section">
+                    <label for="text_summary_backend">Бэкенд для пересказа:</label>
+                    <select id="text_summary_backend">
+                        <option value="ollama">Ollama</option>
+                        <option value="llama_cpp">llama.cpp</option>
+                        <option value="custom_api">Custom API</option>
+                    </select>
+                </div>
+
+                <div class="models-section">
+                    <label for="text_summarize_model">Модель для пересказа:</label>
+                    <select id="text_summarize_model"></select>
+                </div>
+
+                <div class="models-section">
+                    <label for="text_review_model">Модель для ревью (опционально):</label>
+                    <select id="text_review_model">
+                        <option value="">— не использовать —</option>
+                    </select>
+                </div>
+
+                <div class="models-section">
+                    <label for="text_prompt_template">Шаблон промпта:</label>
+                    <select id="text_prompt_template">
+                        <option value="">— выберите —</option>
+                        {% for tpl in config.PROMPT_TEMPLATES %}
+                        <option value="{{ tpl.id }}" data-text="{{ tpl.prompt_text|e }}" data-scope="{{ tpl.scope or 'summary' }}">{{ tpl.title }} — {{ tpl.description }}</option>
+                        {% endfor %}
+                    </select>
+                    <label for="text_custom_prompt">Промпт для пересказа:</label>
+                    <textarea id="text_custom_prompt" rows="5" placeholder="Настройте текст промпта для пересказа"></textarea>
+                </div>
+
+                <button type="submit">Отправить в очередь</button>
+            </form>
+            <div id="textJobStatus" class="job-status"></div>
         </section>
 
         <section id="docTab" class="tab-section" style="display:none;">
@@ -946,6 +1011,27 @@
                     }
                 }
                 
+                // Populate text summary tab model selects
+                const textSummarizeSelect = document.getElementById('text_summarize_model');
+                const textReviewSelect = document.getElementById('text_review_model');
+                if(textSummarizeSelect){
+                    populateSelect(textSummarizeSelect, data.summarize || [], STORAGE_KEYS.summarizeModel, 'summarize');
+                }
+                if(textReviewSelect){
+                    const currentTextReview = textReviewSelect.value;
+                    textReviewSelect.innerHTML = '<option value="">— не использовать —</option>';
+                    (data.summarize || []).forEach(item => {
+                        const opt = document.createElement('option');
+                        opt.value = item.name;
+                        opt.setAttribute('data-downloaded', item.downloaded ? 'true' : 'false');
+                        opt.textContent = `${item.display_name} ${item.downloaded ? "(скачано)" : "(требуется скачать)"}`;
+                        textReviewSelect.appendChild(opt);
+                    });
+                    if(currentTextReview && Array.from(textReviewSelect.options).some(o => o.value === currentTextReview)){
+                        textReviewSelect.value = currentTextReview;
+                    }
+                }
+
                 if(translateModelSelect && data.translate){
                     populateSelect(translateModelSelect, data.translate || [], STORAGE_KEYS.translateModel, 'translate');
                 }
@@ -1500,10 +1586,41 @@
         loadJobs();
     }
 
+    async function submitTextSummary(event){
+        event.preventDefault();
+        const fileInput = document.getElementById('text_files');
+        if(!fileInput.files.length){ showNotify('Выберите текстовые файлы', true); return; }
+        const params = {
+            summary_model: document.getElementById('text_summarize_model').value,
+            summary_backend: document.getElementById('text_summary_backend').value,
+            review_model: document.getElementById('text_review_model').value || undefined,
+            custom_prompt: document.getElementById('text_custom_prompt').value || undefined,
+            enable_summary: true,
+        };
+        const fd = new FormData();
+        Array.from(fileInput.files).forEach(f => fd.append('files', f));
+        fd.append('params', JSON.stringify(params));
+        showNotify('Файлы отправлены, ожидайте...', false, null, true);
+        const resp = await fetch('/api/jobs/summarize_text', {method:'POST', body: fd});
+        if(!resp.ok){
+            const err = await resp.json().catch(() => ({}));
+            showNotify(err.detail || 'Ошибка отправки', true);
+            return;
+        }
+        const data = await resp.json();
+        const statusEl = document.getElementById('textJobStatus');
+        statusEl.innerHTML = `<p class="small">Job ${data.job_id} создан, ждём события...</p>`;
+        trackJob(data.job_id, statusEl);
+        loadJobs();
+    }
+
     // Override old handlers with SSE-based ones
     document.getElementById('processForm').onsubmit = submitAudio;
     if(document.getElementById('translateForm')){
         document.getElementById('translateForm').onsubmit = submitDoc;
+    }
+    if(document.getElementById('textSummaryForm')){
+        document.getElementById('textSummaryForm').onsubmit = submitTextSummary;
     }
     const audioFileInput = document.getElementById('file');
     if(audioFileInput){
@@ -1512,7 +1629,145 @@
             resetUploadProgress();
         });
     }
+    const textFileInput = document.getElementById('text_files');
+    if(textFileInput){
+        textFileInput.addEventListener('change', () => {
+            const el = document.getElementById('textSelectedFiles');
+            if(el) el.innerHTML = Array.from(textFileInput.files).map(f => escapeHtml(f.name)).join(', ');
+        });
+    }
+    // Wire text summary prompt template
+    const textPromptTemplateSelect = document.getElementById('text_prompt_template');
+    const textCustomPromptTextarea = document.getElementById('text_custom_prompt');
+    if(textPromptTemplateSelect && textCustomPromptTextarea){
+        textPromptTemplateSelect.addEventListener('change', () => {
+            applyTemplateToTextarea(textPromptTemplateSelect, textCustomPromptTextarea, ["summary","both","all"]);
+        });
+    }
     loadJobs();
+
+    /* ---- User Prompts CRUD ---- */
+    let userPrompts = [];
+
+    async function loadUserPrompts(){
+        try {
+            const resp = await fetch('/api/user_prompts');
+            if(!resp.ok) return;
+            userPrompts = await resp.json();
+            renderUserPromptsList();
+            populateUserPromptsInSelects();
+        } catch(e){ console.error('loadUserPrompts failed:', e); }
+    }
+
+    function renderUserPromptsList(){
+        const container = document.getElementById('userPromptsList');
+        if(!container) return;
+        if(!userPrompts.length){
+            container.innerHTML = '<div class="small">Нет сохранённых промптов.</div>';
+            return;
+        }
+        container.innerHTML = userPrompts.map(p => `
+            <div style="display:flex;align-items:center;gap:6px;margin:4px 0;padding:6px;background:var(--bg-card,#f5f5f5);border-radius:6px;">
+                <span style="flex:1;"><b>${escapeHtml(p.title)}</b> <span class="small">(${escapeHtml(p.scope)})</span></span>
+                <button type="button" class="download-btn" style="font-size:11px;padding:2px 8px;" onclick="editUserPrompt('${p.id}')">Ред.</button>
+                <button type="button" class="download-btn" style="font-size:11px;padding:2px 8px;background:#c00;" onclick="deleteUserPrompt('${p.id}')">Удалить</button>
+            </div>
+        `).join('');
+    }
+
+    function populateUserPromptsInSelects(){
+        const selects = [
+            document.getElementById('prompt_template'),
+            document.getElementById('review_prompt_template'),
+            document.getElementById('text_prompt_template'),
+        ];
+        selects.forEach(sel => {
+            if(!sel) return;
+            const existing = sel.querySelector('optgroup[data-user-prompts]');
+            if(existing) existing.remove();
+            if(!userPrompts.length) return;
+            const group = document.createElement('optgroup');
+            group.label = 'Мои промпты';
+            group.setAttribute('data-user-prompts', 'true');
+            userPrompts.forEach(p => {
+                const opt = document.createElement('option');
+                opt.value = 'user:' + p.id;
+                opt.textContent = p.title + ' (' + p.scope + ')';
+                opt.setAttribute('data-text', p.prompt_text);
+                opt.setAttribute('data-scope', p.scope);
+                group.appendChild(opt);
+            });
+            sel.appendChild(group);
+        });
+    }
+
+    async function saveCurrentPrompt(){
+        const titleInput = document.getElementById('save_prompt_title');
+        const title = (titleInput.value || '').trim();
+        const scope = document.getElementById('save_prompt_scope').value;
+        const description = (document.getElementById('save_prompt_description').value || '').trim();
+        const promptText = (document.getElementById('custom_prompt').value || '').trim();
+        if(!title || !promptText){
+            showNotify('Укажите название и текст промпта', true);
+            return;
+        }
+        const editingId = titleInput.dataset.editingId;
+        const payload = {title, scope, description, prompt_text: promptText};
+        let resp;
+        if(editingId){
+            resp = await fetch('/api/user_prompts/' + editingId, {
+                method: 'PUT', headers: {'Content-Type':'application/json'}, body: JSON.stringify(payload)
+            });
+        } else {
+            resp = await fetch('/api/user_prompts', {
+                method: 'POST', headers: {'Content-Type':'application/json'}, body: JSON.stringify(payload)
+            });
+        }
+        if(resp.ok){
+            showNotify(editingId ? 'Промпт обновлён' : 'Промпт сохранён');
+            titleInput.value = '';
+            delete titleInput.dataset.editingId;
+            document.getElementById('save_prompt_description').value = '';
+            document.getElementById('save_prompt_btn').textContent = 'Сохранить промпт';
+            await loadUserPrompts();
+        } else {
+            const err = await resp.json().catch(() => ({}));
+            showNotify(err.detail || 'Ошибка сохранения', true);
+        }
+    }
+
+    function editUserPrompt(id){
+        const p = userPrompts.find(x => x.id === id);
+        if(!p) return;
+        const titleInput = document.getElementById('save_prompt_title');
+        titleInput.value = p.title;
+        titleInput.dataset.editingId = id;
+        document.getElementById('save_prompt_scope').value = p.scope;
+        document.getElementById('save_prompt_description').value = p.description || '';
+        document.getElementById('custom_prompt').value = p.prompt_text;
+        document.getElementById('save_prompt_btn').textContent = 'Обновить промпт';
+        document.getElementById('user_prompts_manager').open = true;
+    }
+
+    async function deleteUserPrompt(id){
+        if(!confirm('Удалить этот промпт?')) return;
+        const resp = await fetch('/api/user_prompts/' + id, {method: 'DELETE'});
+        if(resp.ok){
+            showNotify('Промпт удалён');
+            const titleInput = document.getElementById('save_prompt_title');
+            if(titleInput.dataset.editingId === id){
+                titleInput.value = '';
+                delete titleInput.dataset.editingId;
+                document.getElementById('save_prompt_description').value = '';
+                document.getElementById('save_prompt_btn').textContent = 'Сохранить промпт';
+            }
+            await loadUserPrompts();
+        } else {
+            showNotify('Ошибка удаления', true);
+        }
+    }
+
+    loadUserPrompts();
     </script>
 </body>
 </html>

@@ -22,6 +22,7 @@ class User(Base):
     last_seen_at = Column(DateTime, default=datetime.utcnow, nullable=False)
 
     jobs = relationship("Job", back_populates="user")
+    prompts = relationship("UserPrompt", back_populates="user")
 
 
 class Job(Base):
@@ -44,4 +45,19 @@ class Job(Base):
     result_manifest_json = Column(JSON, nullable=True)
 
     user = relationship("User", back_populates="jobs")
+
+
+class UserPrompt(Base):
+    __tablename__ = "user_prompts"
+
+    id = Column(String, primary_key=True, default=_uuid)
+    user_id = Column(String, ForeignKey("users.id"), nullable=False, index=True)
+    title = Column(String, nullable=False)
+    description = Column(Text, nullable=True)
+    scope = Column(String, default="summary", nullable=False)
+    prompt_text = Column(Text, nullable=False)
+    created_at = Column(DateTime, default=datetime.utcnow, nullable=False)
+    updated_at = Column(DateTime, default=datetime.utcnow, nullable=False)
+
+    user = relationship("User", back_populates="prompts")
 

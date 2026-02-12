@@ -394,17 +394,20 @@ def audio_job(self, job_id: str, user_id: str, params: Dict) -> str:
         try:
             update_job(session, job_id, status="running", stage="audio_preprocess", started_at=datetime.utcnow())
             audio_path = params["input_path"]
-            preset = PRESETS.get(params.get("preset") or "balanced", PRESETS["balanced"])
+            cfg = config_manager.get_config()
+            default_preset = cfg.get("DEFAULT_PRESET", "quality")
+            default_asr_model = cfg.get("DEFAULT_TRANSCRIBE_MODEL", "faster-whisper-large-v3")
+            preset = PRESETS.get(params.get("preset") or default_preset, PRESETS["quality"])
             LOGGER.info(
                 "Job %s: Starting audio preprocess. input=%s preset=%s loudnorm=%s",
                 job_id,
                 audio_path,
-                params.get("preset") or "balanced",
+                params.get("preset") or default_preset,
                 preset.get("loudnorm", False),
             )
             wav_path, duration_sec = transcriber.convert_to_wav(
                 audio_path,
-                model=params.get("asr_model", "whisper-tiny"),
+                model=params.get("asr_model", default_asr_model),
                 loudnorm=preset.get("loudnorm", False),
             )
             params["duration_sec"] = duration_sec
@@ -438,7 +441,7 @@ def audio_job(self, job_id: str, user_id: str, params: Dict) -> str:
             LOGGER.info(
                 "Job %s: Transcribing start model=%s engine=%s language=%s vad_filter=%s beam=%s temp=%s diarization=%s",
                 job_id,
-                params.get("asr_model", "whisper-tiny"),
+                params.get("asr_model", default_asr_model),
                 asr_engine,
                 params.get("language"),
                 vad_filter_value,
@@ -446,9 +449,9 @@ def audio_job(self, job_id: str, user_id: str, params: Dict) -> str:
                 preset.get("temperature"),
                 params.get("enable_diarization", True),
             )
-            
+
             # Если модель faster-whisper не скачана, не ждём бесконечной загрузки
-            asr_model = params.get("asr_model", "whisper-tiny")
+            asr_model = params.get("asr_model", default_asr_model)
             downloaded = is_model_downloaded(asr_model, "transcribe")
             LOGGER.info("Job %s: ASR model %s downloaded=%s", job_id, asr_model, downloaded)
             if asr_engine == "faster_whisper" and asr_model.startswith("faster-whisper") and not downloaded:
@@ -490,7 +493,7 @@ def audio_job(self, job_id: str, user_id: str, params: Dict) -> str:
             future = executor.submit(
                 transcriber.transcribe,
                 wav_path,
-                params.get("asr_model", "whisper-tiny"),
+                params.get("asr_model", default_asr_model),
                 asr_engine=asr_engine,
                 language=params.get("language"),
                 beam_size=preset.get("beam_size"),
@@ -736,6 +739,107 @@ def doc_job(self, job_id: str, user_id: str, params: Dict) -> str:
             update_job(
                 session,
                 job_id,
+                status="failed",
+                error_message=message,
+                error_traceback=traceback.format_exc(),
+                finished_at=datetime.utcnow(),
+                eta_seconds=None,
+            )
+    return job_id
+
+
+@celery_app.task(name="app.tasks.summarize_text_job", bind=True)
+def summarize_text_job(self, job_id: str, user_id: str, params: Dict) -> str:
+    """Summarize uploaded text files without ASR pipeline."""
+    ensure_tables()
+    with session_scope() as session:
+        job = session.get(Job, job_id)
+        if not job:
+            return job_id
+        job_dir = build_user_job_dir(user_id, job_id)
+        try:
+            update_job(session, job_id, status="running", stage="reading_text",
+                       started_at=datetime.utcnow(), progress=5)
+
+            text_files = params.get("text_files", [])
+            parts = []
+            for tf in text_files:
+                file_path = os.path.join(job_dir, tf)
+                if os.path.exists(file_path):
+                    with open(file_path, "r", encoding="utf-8") as f:
+                        parts.append(f.read())
+            combined_text = "\n\n---\n\n".join(parts)
+
+            if not combined_text.strip():
+                raise ValueError("Загруженные файлы не содержат текста")
+
+            LOGGER.info("Job %s: Text summarization start, text_length=%d, files=%d",
+                        job_id, len(combined_text), len(text_files))
+
+            update_job(session, job_id, stage="summarizing", progress=20)
+            summary_text = _summarize_chunked(combined_text, params, segments=[])
+            LOGGER.info("Job %s: Summarization completed, length=%d",
+                        job_id, len(summary_text or ""))
+
+            review_model = params.get("review_model")
+            if review_model and summary_text:
+                LOGGER.info("Job %s: Starting review with model %s", job_id, review_model)
+                update_job(session, job_id, stage="reviewing", progress=60)
+                cfg = config_manager.get_config()
+                review_prompt_template = params.get("review_prompt") or cfg.get("REVIEW_PROMPT",
+                    "Проверь и улучши следующий пересказ. Исправь ошибки, улучши структуру, "
+                    "добавь недостающие детали, если они важны. Сохрани формат Markdown.\n\nПересказ:\n")
+                if "{summary}" in review_prompt_template:
+                    review_prompt = review_prompt_template.format(summary=summary_text)
+                elif "Пересказ:" in review_prompt_template or "пересказ:" in review_prompt_template.lower():
+                    review_prompt = review_prompt_template + summary_text
+                else:
+                    review_prompt = review_prompt_template + "\n\nПересказ:\n" + summary_text
+                review_text = summarizer.summarize(
+                    summary_text,
+                    model=review_model,
+                    backend=params.get("summary_backend", "ollama"),
+                    prompt=review_prompt,
+                    custom_api_url=params.get("summary_custom_api_url"),
+                )
+                if review_text and review_text.strip():
+                    LOGGER.info("Job %s: Review completed, length=%d", job_id, len(review_text))
+                    summary_text = review_text
+
+            update_job(session, job_id, stage="saving", progress=85)
+
+            manifest: List[Dict] = []
+
+            # Save combined input text
+            combined_path = os.path.join(job_dir, "combined_input.txt")
+            _write_text(combined_path, combined_text)
+            _add_manifest_item(manifest, combined_path, "input_text", job_dir)
+
+            # Save summary
+            if summary_text:
+                summary_path = os.path.join(job_dir, "summary.md")
+                _write_text(summary_path, summary_text)
+                _add_manifest_item(manifest, summary_path, "summary_md", job_dir)
+
+            update_job(
+                session, job_id,
+                status="success", stage="done", progress=100,
+                finished_at=datetime.utcnow(),
+                result_manifest=manifest,
+            )
+            LOGGER.info("Job %s: Text summarization completed successfully", job_id)
+        except Exception as exc:
+            LOGGER.error("Job %s: Failed with error: %s", job_id, str(exc), exc_info=True)
+            try:
+                session.refresh(job)
+            except Exception:
+                pass
+            stage = getattr(job, "stage", None)
+            message = str(exc)
+            if stage:
+                message = f"Стадия: {stage}\n{message}"
+            update_job(
+                session, job_id,
                 status="failed",
                 error_message=message,
                 error_traceback=traceback.format_exc(),

@@ -50,6 +50,9 @@ def _normalize_config(cfg: Dict[str, Any]) -> Dict[str, Any]:
     cfg.setdefault("MAX_AUDIO_BATCH_FILES", 5)
     cfg.setdefault("MAX_AUDIO_DURATION_SEC", 14400)  # safety limit ~4h per file
     cfg.setdefault("FFMPEG_TIMEOUT_SECONDS", 180)  # upper bound for conversion step
+    cfg.setdefault("DEFAULT_TRANSCRIBE_MODEL", "faster-whisper-large-v3")
+    cfg.setdefault("DEFAULT_PRESET", "quality")
+    cfg.setdefault("MAX_TEXT_BATCH_FILES", 10)
     return cfg
 
 
