@@ -1,0 +1,10 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(python:*)",
+      "Bash(git status:*)",
+      "Bash(git add:*)",
+      "Bash(git commit -m \"$\\(cat <<''EOF''\nAdd best-quality defaults, text summarization, and user prompt management\n\n- Default transcription to faster-whisper-large-v3 with quality preset \\(beam=5, vad, loudnorm\\)\n- Add Text Summary tab: upload external transcriptions \\(.txt, up to 1MB x 10\\) for summarization without ASR\n- Add user prompt CRUD: save, edit, delete custom prompts per session, merged into all prompt selects\n- New UserPrompt DB model, /api/user_prompts endpoints, /api/jobs/summarize_text endpoint\n- Add CLAUDE.md for project guidance\n\nCo-Authored-By: Claude Sonnet 4.5 <noreply@anthropic.com>\nEOF\n\\)\")"
+    ]
+  }
+}
